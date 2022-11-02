@@ -63,31 +63,31 @@ int sample_cpus( void ) {
 	memset( &debug_data, 0, sizeof( debug_data ) );
 
 	for( i=0; i<NumCpus; i++ ) {
-	/* Get the sutime of the idle thread #i+1 */
-	debug_data.tid = i + 1;
-	devctl( ProcFd, DCMD_PROC_TIDSTATUS,
-	&debug_data, sizeof( debug_data ), NULL );
+		/* Get the sutime of the idle thread #i+1 */
+		debug_data.tid = i + 1;
+		devctl( ProcFd, DCMD_PROC_TIDSTATUS,
+		&debug_data, sizeof( debug_data ), NULL );
 
-	/* Get the current time */
-	current_nsec = nanoseconds();
+		/* Get the current time */
+		current_nsec = nanoseconds();
 
-	/* Get the deltas between now and the last samples */
-	sutime_delta = debug_data.sutime - LastSutime[i];
-	time_delta = current_nsec - LastNsec[i];
+		/* Get the deltas between now and the last samples */
+		sutime_delta = debug_data.sutime - LastSutime[i];
+		time_delta = current_nsec - LastNsec[i];
 
-	/* Figure out the load */
-	Loads[i] = 100.0 - ( (float)( sutime_delta * 100 ) / (float)time_delta );
+		/* Figure out the load */
+		Loads[i] = 100.0 - ( (float)( sutime_delta * 100 ) / (float)time_delta );
 
-	/*
-	* Flat out strange rounding issues.
-	*/
-	if( Loads[i] < 0 ) {
-	Loads[i] = 0;
-	}
+		/*
+		* Flat out strange rounding issues.
+		*/
+		if( Loads[i] < 0 ) {
+			Loads[i] = 0;
+		}
 
-	/* Keep these for reference in the next cycle */
-	LastNsec[i] = current_nsec;
-	LastSutime[i] = debug_data.sutime;
+		/* Keep these for reference in the next cycle */
+		LastNsec[i] = current_nsec;
+		LastSutime[i] = debug_data.sutime;
 	}
 
 	return EOK;
@@ -152,14 +152,43 @@ void close_cpu(void) {
 }
 
 int main(int argc, char* argv[]) {
-	int i,j;
+	int j;
+
+	float t = 0.2;
+	float ave;
+	float min_value, max_value;
+	float min_cpu, max_cpu;
 
 	init_cpu();
 	printf("System has: %d CPUs\n", NumCpus);
-	for(i=0; i<20; i++) {
+	while(1) {
 		sample_cpus();
-		for(j=0; j<NumCpus;j++)
-		printf("CPU #%d: %f\n", j, Loads[j]);
+		ave = 0;
+		for(j=0; j<NumCpus;j++) {
+			printf("CPU #%d: %f\n", j, Loads[j]);
+			ave += Loads[j];
+		}
+		ave /= NumCpus;
+
+		min_value = max_value = Loads[0];
+		min_cpu = max_cpu = 0;
+
+		for (j=1; j<NumCpus; j++) {
+			if (Loads[j] < min_value) {
+				min_value = Loads[j];
+				min_cpu = j;
+			}
+			if (Loads[j] > max_value) {
+				max_value = Loads[j];
+				max_cpu = j;
+			}
+		}
+
+		// Check if max is heavy and min is light
+		if (max_value > ave * (1+t) && min_value < ave * (1-t)) {
+			// Step 5
+		}
+
 		sleep(1);
 	}
 
