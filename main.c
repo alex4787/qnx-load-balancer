@@ -151,7 +151,7 @@ void close_cpu(void) {
 	}
 }
 
-int main(int argc, char* argv[]) {
+int partB() {
 	int j;
 
 	float t = 0.2;
@@ -194,5 +194,61 @@ int main(int argc, char* argv[]) {
 
 	close_cpu();
 }
+
+
+// for part A
+
+//struct load_state_t {
+//	unsigned int task_ready_count;
+//	unsigned int task_sleep_count;
+//	// currently running tasks
+//	tcb_t* pcurrent;
+//  thread_t *pcurrent[50];
+//	// queue where sleep tasks are located
+//  thread_t *ppend[50];
+//	tcb_t* ppend;
+//	// sum of time slices of all ready tasks
+//	unsigned int totaltime;
+//	// size of each ready task and its time slice on the core
+//	task_info_t task_info[CONFIG_MAX_TASKS];
+//} load_state_t;
+
+// defining load states
+#define LIGHT 0
+#define NORMAL 1
+#define HEAVY 2
+
+#define LOAD_PROPORTION_THRESHOLD 0.2
+
+int get_load_state(int processor_load, int avg_processor_load) {
+	if (processor_load > avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
+		return HEAVY;
+	} else if (avg_processor_load * (1+LOAD_PROPORTION_THRESHOLD) >= processor_load && processor_load >= avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
+		return NORMAL;
+	} else if (processor_load < avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
+		return LIGHT;
+	} else {
+		return -1; // something went wrong
+	}
+}
+
+void partA() {
+// load monitoring
+	// load monitoring involves populating the load_state_t struct
+}
+
+
+int main(int argc, char* argv[]) {
+
+	system("pidin");
+	system("pidin | grep 'RUNNING'");
+	system("pidin | grep 'READY'");
+//	 first num = process id, second num = thread id
+//	 need to figure out how to store these
+
+
+	return 0;
+}
+
 
 
