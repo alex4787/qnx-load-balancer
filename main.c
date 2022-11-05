@@ -31,6 +31,8 @@ static _uint64 LastSutime[MAX_CPUS];
 static _uint64 LastNsec[MAX_CPUS];
 static int ProcFd = -1;
 static int NumCpus = 0;
+static float load_sum = 0;
+static float load_average = 0;
 
 
 int find_ncpus(void) {
@@ -155,7 +157,7 @@ int partB() {
 	int j;
 
 	float t = 0.2;
-	float ave;
+	float sum, ave;
 	float min_value, max_value;
 	float min_cpu, max_cpu;
 
@@ -163,12 +165,12 @@ int partB() {
 	printf("System has: %d CPUs\n", NumCpus);
 	while(1) {
 		sample_cpus();
-		ave = 0;
+		sum = 0;
 		for(j=0; j<NumCpus;j++) {
-			printf("CPU #%d: %f\n", j, Loads[j]);
-			ave += Loads[j];
+//			printf("CPU #%d: %f\n", j, Loads[j]);
+			sum += Loads[j];
 		}
-		ave /= NumCpus;
+		ave = sum / NumCpus;
 
 		min_value = max_value = Loads[0];
 		min_cpu = max_cpu = 0;
@@ -185,6 +187,7 @@ int partB() {
 		}
 
 		// Check if max is heavy and min is light
+		// could call get_load_state() function defined below
 		if (max_value > ave * (1+t) && min_value < ave * (1-t)) {
 			// Step 5
 		}
@@ -197,21 +200,6 @@ int partB() {
 
 
 // for part A
-
-//struct load_state_t {
-//	unsigned int task_ready_count;
-//	unsigned int task_sleep_count;
-//	// currently running tasks
-//	tcb_t* pcurrent;
-//  thread_t *pcurrent[50];
-//	// queue where sleep tasks are located
-//  thread_t *ppend[50];
-//	tcb_t* ppend;
-//	// sum of time slices of all ready tasks
-//	unsigned int totaltime;
-//	// size of each ready task and its time slice on the core
-//	task_info_t task_info[CONFIG_MAX_TASKS];
-//} load_state_t;
 
 // defining load states
 #define LIGHT 0
@@ -233,18 +221,31 @@ int get_load_state(int processor_load, int avg_processor_load) {
 }
 
 void partA() {
-// load monitoring
-	// load monitoring involves populating the load_state_t struct
-}
 
+	int j;
+
+	float t = 0.2;
+	float sum, ave;
+
+	init_cpu();
+	printf("System has: %d CPUs\n", NumCpus);
+	while(1) {
+		sleep(1);
+		sample_cpus();
+		sum = 0;
+		for(j=0; j<NumCpus;j++) {
+			sum += Loads[j];
+		}
+		ave = sum / NumCpus;
+
+		load_sum = sum;
+		load_average = ave;
+	}
+}
 
 int main(int argc, char* argv[]) {
 
-	system("pidin");
-	system("pidin | grep 'RUNNING'");
-	system("pidin | grep 'READY'");
-//	 first num = process id, second num = thread id
-//	 need to figure out how to store these
+	partA();
 
 
 	return 0;
