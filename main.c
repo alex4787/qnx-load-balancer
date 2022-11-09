@@ -190,12 +190,26 @@ int partB() {
 		// could call get_load_state() function defined below
 		if (max_value > ave * (1+t) && min_value < ave * (1-t)) {
 			// Step 5
+//			if (migration_needed(max_value, min_value, ???)) {
+//
+//			}
 		}
 
 		sleep(1);
 	}
 
 	close_cpu();
+}
+
+#define FALSE 0
+#define TRUE 1
+
+int migration_needed(int max_thread, int min_thread, int task_size) {
+	if (min_thread + task_size >= max_thread) {
+		return FALSE;
+	} else {
+		return TRUE;
+	}
 }
 
 
