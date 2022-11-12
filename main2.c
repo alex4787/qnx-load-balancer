@@ -57,21 +57,25 @@ int populate_load_states() {
 		/* The only value that matters gets reset */
 		debug_process_t procinfo;
 		while ((dirent = readdir(dir)) != NULL) {
+			memset(&procinfo, 0, sizeof(procinfo));
 			if (isdigit(dirent->d_name[0])) {
 				int pid = atoi(dirent->d_name);
 				int fd;
 				char buff[512];
+				int procstatus;
 
 
-				snprintf(buff, sizeof(buff), "/proc/%d", pid);
+				snprintf(buff, sizeof(buff), "/proc/%d/as", pid);
 				printf("pid:%d\n", pid);
 
 				if ((fd = open(buff, O_RDONLY)) == -1) {
 					return 0;
 				}
 
-				if (devctl(fd, DCMD_PROC_INFO, &procinfo, sizeof procinfo, 0) != -1) {
+				if ((procstatus = devctl(fd, DCMD_PROC_INFO, &procinfo, sizeof procinfo, 0)) != -1) {
 					int lasttid, tid, cpu;
+					printf("proc_status=%d\n", procstatus);
+					printf("num_threads=%d\n", procinfo.num_threads);
 					if (procinfo.flags & _NTO_PF_ZOMBIE) {
 						close(fd);
 						continue;
