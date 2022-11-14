@@ -27,7 +27,13 @@
 
 #define TRUE 0
 #define FALSE 1
+
 #define MAX_CPUS 32
+
+#define LIGHT_LOAD 0
+#define NORMAL_LOAD 1
+#define HEAVY_LOAD 2
+#define LOAD_PROPORTION_THRESHOLD 0.2
 
 struct load_state_t {
 	unsigned int task_ready_count;
@@ -35,13 +41,34 @@ struct load_state_t {
 	debug_thread_t current_task;
 	debug_thread_t min_sleep_task;
 	unsigned long int totaltime;
-};
+} load_state_t;
 
 static struct load_state_t LoadStates[MAX_CPUS];
 
 static int NumCpus = 0;
 
-int populate_load_states() {
+void populate_loads_struct(int cpu, debug_thread_t thread, struct load_state_t loads[], int min_sleep_task_found) {
+	if (thread.state == STATE_RUNNING) {
+		loads[cpu].current_task = thread;
+		printf("found running task\n");
+	} else if (thread.state == STATE_READY) {
+		loads[cpu].task_ready_count += 1;
+		loads[cpu].totaltime += thread.sutime;
+		printf("total time: %ld\n", loads[cpu].totaltime);
+	} else if (thread.state != STATE_STOPPED && thread.state != STATE_DEAD) {
+		loads[cpu].task_sleep_count += 1;
+		if (min_sleep_task_found == FALSE) {
+			LoadStates[cpu].min_sleep_task = thread;
+			min_sleep_task_found = TRUE;
+			printf("first min sleep task set\n");
+		} else if (thread.sutime < loads[cpu].min_sleep_task.sutime) {
+			loads[cpu].min_sleep_task = thread;
+			printf("new min sleep task: %d\n", loads[cpu].min_sleep_task.sutime);
+		}
+	}
+}
+
+int do_stuff_with_cpus() {
 	DIR			*dir;
 	char		fname[PATH_MAX];
 
@@ -102,24 +129,9 @@ int populate_load_states() {
 							// Populate load_state_t array
 							cpu = threadinfo.last_cpu;
 							printf("CPU: %d\n", cpu);
-							if (threadinfo.state == STATE_RUNNING) {
-								LoadStates[cpu].current_task = threadinfo;
-								printf("found running task\n");
-							} else if (threadinfo.state == STATE_READY) {
-								LoadStates[cpu].task_ready_count += 1;
-								LoadStates[cpu].totaltime += threadinfo.sutime;
-								printf("total time: %ld\n", LoadStates[cpu].totaltime);
-							} else if (threadinfo.state != STATE_STOPPED && threadinfo.state != STATE_DEAD) {
-								LoadStates[cpu].task_sleep_count += 1;
-								if (min_sleep_task_found == FALSE) {
-									LoadStates[cpu].min_sleep_task = threadinfo;
-									min_sleep_task_found = TRUE;
-									printf("first min sleep task set\n");
-								} else if (threadinfo.sutime < LoadStates[cpu].min_sleep_task.sutime) {
-									LoadStates[cpu].min_sleep_task = threadinfo;
-									printf("new min sleep task: %d\n", LoadStates[cpu].min_sleep_task.sutime);
-								}
-							}
+
+							// Part A
+							populate_loads_struct(cpu, threadinfo, LoadStates, min_sleep_task_found);
 
 						}
 					}
@@ -159,7 +171,7 @@ int init_cpu( void ) {
 			/* Grab this value */
 			NumCpus = _syspage_ptr->num_cpu;
 
-			populate_load_states();
+			do_stuff_with_cpus();
 
 			return(EOK);
 		}
@@ -170,31 +182,45 @@ int init_cpu( void ) {
 	return(-1);
 }
 
-void partA() {
-	int j;
 
-	float t = 0.2;
 
-	init_cpu();
-	printf("System has: %d CPUs\n", NumCpus);
-	while(1) {
-		sleep(1);
-		populate_load_states();
-//		sum = 0;
-//		for(j=0; j<NumCpus;j++) {
-//			sum += Loads[j];
-//		}
-//		ave = sum / NumCpus;
-//
-//		load_sum = sum;
-//		load_average = ave;
+// for part B
+
+int migration_needed(float max_thread, float min_thread, float task_size) {
+	if (min_thread + task_size >= max_thread) {
+		return FALSE;
+	} else {
+		return TRUE;
+	}
+}
+
+
+int get_load_state(int processor_load, int avg_processor_load) {
+	if (processor_load > avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
+		return HEAVY_LOAD;
+	} else if (avg_processor_load * (1+LOAD_PROPORTION_THRESHOLD) >= processor_load && processor_load >= avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
+		return NORMAL_LOAD;
+	} else if (processor_load < avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
+		return LIGHT_LOAD;
+	} else {
+		return -1; // something went wrong
+	}
+}
+
+void partB() {
+	for (int i=0; i<NumCpus; i++) {
+
 	}
 }
 
 
 int main(int argc, char* argv[]) {
 
-	partA();
+	init_cpu();
+	printf("System has: %d CPUs\n", NumCpus);
 
-	return 0;
+	while(1) {
+		sleep(1);
+		do_stuff_with_cpus();
+	}
 }
