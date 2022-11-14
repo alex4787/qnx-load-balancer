@@ -25,23 +25,21 @@
 #include <errno.h>
 #include <dirent.h>
 
+#define TRUE 0
+#define FALSE 1
 #define MAX_CPUS 32
 
 struct load_state_t {
 	unsigned int task_ready_count;
 	unsigned int task_sleep_count;
-	debug_thread_t* pcurrent;
-	debug_thread_t* ppend;
-	unsigned int totaltime;
+	debug_thread_t current_task;
+	debug_thread_t min_sleep_task;
+	unsigned long int totaltime;
 };
 
 static struct load_state_t LoadStates[MAX_CPUS];
 
-//static _uint64 LastSutime[MAX_CPUS];
-//static _uint64 LastNsec[MAX_CPUS];
 static int NumCpus = 0;
-//static float load_sum = 0;
-//static float load_average = 0;
 
 int populate_load_states() {
 	DIR			*dir;
@@ -54,8 +52,15 @@ int populate_load_states() {
 		return 0;
 	} else {
 		struct dirent * dirent;
-		/* The only value that matters gets reset */
+		/* Reset values */
 		debug_process_t procinfo;
+		for (int i=0; i<NumCpus; i++) {
+			LoadStates[i].task_ready_count = 0;
+			LoadStates[i].task_sleep_count = 0;
+			LoadStates[i].totaltime = 0;
+		}
+		int min_sleep_task_found = FALSE;
+
 		while ((dirent = readdir(dir)) != NULL) {
 			memset(&procinfo, 0, sizeof(procinfo));
 			if (isdigit(dirent->d_name[0])) {
@@ -97,7 +102,24 @@ int populate_load_states() {
 							// Populate load_state_t array
 							cpu = threadinfo.last_cpu;
 							printf("CPU: %d\n", cpu);
-
+							if (threadinfo.state == STATE_RUNNING) {
+								LoadStates[cpu].current_task = threadinfo;
+								printf("found running task\n");
+							} else if (threadinfo.state == STATE_READY) {
+								LoadStates[cpu].task_ready_count += 1;
+								LoadStates[cpu].totaltime += threadinfo.sutime;
+								printf("total time: %ld\n", LoadStates[cpu].totaltime);
+							} else if (threadinfo.state != STATE_STOPPED && threadinfo.state != STATE_DEAD) {
+								LoadStates[cpu].task_sleep_count += 1;
+								if (min_sleep_task_found == FALSE) {
+									LoadStates[cpu].min_sleep_task = threadinfo;
+									min_sleep_task_found = TRUE;
+									printf("first min sleep task set\n");
+								} else if (threadinfo.sutime < LoadStates[cpu].min_sleep_task.sutime) {
+									LoadStates[cpu].min_sleep_task = threadinfo;
+									printf("new min sleep task: %d\n", LoadStates[cpu].min_sleep_task.sutime);
+								}
+							}
 
 						}
 					}
