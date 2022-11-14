@@ -43,9 +43,17 @@ struct load_state_t {
 	unsigned long int totaltime;
 } load_state_t;
 
+struct cpu_loads_t {
+	int total_time;
+	int num_tasks;
+} cpu_loads_t;
+
 static struct load_state_t LoadStates[MAX_CPUS];
+static struct cpu_loads_t CpuLoads[MAX_CPUS];
 
 static int NumCpus = 0;
+static int min_cpu, max_cpu, min_load, max_load;
+static float ave_load;
 
 void populate_loads_struct(int cpu, debug_thread_t thread, struct load_state_t loads[], int min_sleep_task_found) {
 	if (thread.state == STATE_RUNNING) {
@@ -68,7 +76,51 @@ void populate_loads_struct(int cpu, debug_thread_t thread, struct load_state_t l
 	}
 }
 
-int do_stuff_with_cpus() {
+void sampleCpus(struct cpu_loads_t cpus[], int cpu, debug_thread_t thread) {
+	if (thread.state == STATE_READY) {
+		cpus[cpu].total_time += thread.sutime;
+		cpus[cpu].num_tasks += 1;
+	}
+}
+
+void find_min_max_cpus(struct cpu_loads_t cpuLoads[]) {
+	float sum;
+	min_load = 0;
+	max_load = 0;
+	min_cpu = 0;
+	max_cpu = 0;
+
+	for (int i=0; i<NumCpus; i++) {
+		sum += cpuLoads[i].total_time;
+	}
+
+	ave_load = sum / NumCpus;
+
+	for (int i=0; i<NumCpus; i++) {
+		if (cpuLoads[i].total_time < min_load) {
+			min_load = cpuLoads[i].total_time;
+			min_cpu = i;
+		}
+		if (cpuLoads[i].total_time > max_load) {
+			max_load = cpuLoads[i].total_time;
+			max_cpu = i;
+		}
+	}
+}
+
+int get_load_state(int processor_load, int avg_processor_load) {
+	if (processor_load > avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
+		return HEAVY_LOAD;
+	} else if (avg_processor_load * (1+LOAD_PROPORTION_THRESHOLD) >= processor_load && processor_load >= avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
+		return NORMAL_LOAD;
+	} else if (processor_load < avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
+		return LIGHT_LOAD;
+	} else {
+		return -1; // something went wrong
+	}
+}
+
+int partA() {
 	DIR			*dir;
 	char		fname[PATH_MAX];
 
@@ -85,6 +137,9 @@ int do_stuff_with_cpus() {
 			LoadStates[i].task_ready_count = 0;
 			LoadStates[i].task_sleep_count = 0;
 			LoadStates[i].totaltime = 0;
+
+			CpuLoads[i].total_time = 0;
+			CpuLoads[i].num_tasks = 0;
 		}
 		int min_sleep_task_found = FALSE;
 
@@ -133,6 +188,17 @@ int do_stuff_with_cpus() {
 							// Part A
 							populate_loads_struct(cpu, threadinfo, LoadStates, min_sleep_task_found);
 
+							// Part B
+							sampleCpus(CpuLoads, cpu, threadinfo);
+							find_min_max_cpus(CpuLoads);
+							int load_state_min_core = get_load_state(min_load, ave_load);
+							int load_state_max_core = get_load_state(max_load, ave_load);
+
+							if (load_state_max_core != HEAVY_LOAD || load_state_max_core != LIGHT_LOAD) {
+								// no migration needed
+							}
+
+							// Part B part 5 to check if migration needed
 						}
 					}
 				}
@@ -171,7 +237,7 @@ int init_cpu( void ) {
 			/* Grab this value */
 			NumCpus = _syspage_ptr->num_cpu;
 
-			do_stuff_with_cpus();
+			partA();
 
 			return(EOK);
 		}
@@ -183,37 +249,6 @@ int init_cpu( void ) {
 }
 
 
-
-// for part B
-
-int migration_needed(float max_thread, float min_thread, float task_size) {
-	if (min_thread + task_size >= max_thread) {
-		return FALSE;
-	} else {
-		return TRUE;
-	}
-}
-
-
-int get_load_state(int processor_load, int avg_processor_load) {
-	if (processor_load > avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
-		return HEAVY_LOAD;
-	} else if (avg_processor_load * (1+LOAD_PROPORTION_THRESHOLD) >= processor_load && processor_load >= avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
-		return NORMAL_LOAD;
-	} else if (processor_load < avg_processor_load * (1-LOAD_PROPORTION_THRESHOLD)) {
-		return LIGHT_LOAD;
-	} else {
-		return -1; // something went wrong
-	}
-}
-
-void partB() {
-	for (int i=0; i<NumCpus; i++) {
-
-	}
-}
-
-
 int main(int argc, char* argv[]) {
 
 	init_cpu();
@@ -221,6 +256,6 @@ int main(int argc, char* argv[]) {
 
 	while(1) {
 		sleep(1);
-		do_stuff_with_cpus();
+		partA();
 	}
 }
