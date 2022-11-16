@@ -40,10 +40,15 @@ struct load_state_t {
 	unsigned int task_sleep_count;
 	debug_thread_t current_task;
 	debug_thread_t min_sleep_task;
+	debug_thread_t min_task;
 	unsigned long int totaltime;
 } load_state_t;
 
+// might not need num_tasks
+// if don't need num tasks we don't need a struct holding 1 thing --> we could just use int
+// could use total time from load_state_t struct ^
 struct cpu_loads_t {
+	debug_thread_t *threads;
 	int total_time;
 	int num_tasks;
 } cpu_loads_t;
@@ -55,19 +60,31 @@ static int NumCpus = 0;
 static int min_cpu, max_cpu, min_load, max_load;
 static float ave_load;
 
-void populate_loads_struct(int cpu, debug_thread_t thread, struct load_state_t loads[], int min_sleep_task_found) {
+void find_min_task(int cpu, debug_thread_t thread, struct load_state_t loads[], int *first_task) {
+	if (first_task == TRUE) {
+		loads[cpu].min_task = thread;
+		*first_task = FALSE;
+	} else if (thread.state == STATE_RUNNING || (thread.state != STATE_STOPPED && thread.state != STATE_DEAD)) {
+		if (thread.sutime < loads[cpu].min_task.sutime) {
+			loads[cpu].min_task = thread;
+		}
+	}
+}
+void populate_loads_struct(int cpu, debug_thread_t thread, struct load_state_t loads[], int *first_sleep_task) {
 	if (thread.state == STATE_RUNNING) {
 		loads[cpu].current_task = thread;
+
 		printf("found running task\n");
 	} else if (thread.state == STATE_READY) {
 		loads[cpu].task_ready_count += 1;
 		loads[cpu].totaltime += thread.sutime;
+
 		printf("total time: %ld\n", loads[cpu].totaltime);
 	} else if (thread.state != STATE_STOPPED && thread.state != STATE_DEAD) {
 		loads[cpu].task_sleep_count += 1;
-		if (min_sleep_task_found == FALSE) {
+		if (first_sleep_task == TRUE) {
 			LoadStates[cpu].min_sleep_task = thread;
-			min_sleep_task_found = TRUE;
+			*first_sleep_task = FALSE;
 			printf("first min sleep task set\n");
 		} else if (thread.sutime < loads[cpu].min_sleep_task.sutime) {
 			loads[cpu].min_sleep_task = thread;
@@ -141,7 +158,8 @@ int partA() {
 			CpuLoads[i].total_time = 0;
 			CpuLoads[i].num_tasks = 0;
 		}
-		int min_sleep_task_found = FALSE;
+		int first_sleep_task = TRUE;
+		int first_task = TRUE;
 
 		while ((dirent = readdir(dir)) != NULL) {
 			memset(&procinfo, 0, sizeof(procinfo));
@@ -185,10 +203,14 @@ int partA() {
 							cpu = threadinfo.last_cpu;
 							printf("CPU: %d\n", cpu);
 
+
 							// Part A
-							populate_loads_struct(cpu, threadinfo, LoadStates, min_sleep_task_found);
+							populate_loads_struct(cpu, threadinfo, LoadStates, &first_sleep_task);
+							find_min_task(cpu, threadinfo, LoadStates, &first_task);
 
 							// Part B
+							// could refactor to use total_time from LoadStates instead of sampleCpus
+
 							sampleCpus(CpuLoads, cpu, threadinfo);
 							find_min_max_cpus(CpuLoads);
 							int load_state_min_core = get_load_state(min_load, ave_load);
@@ -196,9 +218,17 @@ int partA() {
 
 							if (load_state_max_core != HEAVY_LOAD || load_state_max_core != LIGHT_LOAD) {
 								// no migration needed
+								break; // ??
 							}
 
+
 							// Part B part 5 to check if migration needed
+							if (LoadStates[min_cpu].min_task.sutime + min_load >= max_load) {
+								// no migration
+								break;
+							} else {
+
+							}
 						}
 					}
 				}
