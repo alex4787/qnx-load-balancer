@@ -140,6 +140,7 @@ int get_load_state(int processor_load, int avg_processor_load) {
 int partA() {
 	DIR			*dir;
 	char		fname[PATH_MAX];
+	char		slay_call[256];
 
 	dir = opendir("/proc");
 
@@ -217,6 +218,7 @@ int partA() {
 							int load_state_max_core = get_load_state(max_load, ave_load);
 
 							if (load_state_max_core != HEAVY_LOAD || load_state_max_core != LIGHT_LOAD) {
+								printf("no migration needed 1\n");
 								// no migration needed
 								break; // ??
 							}
@@ -224,10 +226,13 @@ int partA() {
 
 							// Part B part 5 to check if migration needed
 							if (LoadStates[min_cpu].min_task.sutime + min_load >= max_load) {
+								printf("no migration needed 2\n");
 								// no migration
 								break;
 							} else {
-
+								sprintf(slay_call, "slay -m pid %d -C %d -T %d", pid, min_cpu, tid);
+								system(slay_call);
+								printf("making slay call\n");
 							}
 						}
 					}
