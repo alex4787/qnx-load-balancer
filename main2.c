@@ -219,14 +219,23 @@ int run_load_balancer() {
 	// Migrate here
 	printf("migration needed\n");
 	int slay_pid;
-	/* sprintf(slay_call, "slay -m pid %d -C %d -T %d", pid, MinCpu, tid); */
+	char slay_buf[128];
+	char min_task_pid[128];
+	sprintf(min_task_pid, "%d", min_task.pid);
+	char min_cpu[128];
+	sprintf(min_cpu, "%d", MinCpu);
+	char min_task_tid[128];
+	sprintf(min_task_tid, "%d", min_task.tid);
 
-	slay_pid = spawnlp(P_NOWAIT, "slay", "slay", "-m", "pid", min_task.pid,
-			"-C", MinCpu, "-T", min_task.tid, NULL);
+	slay_pid = spawnlp(P_WAIT, "slay", "slay", "-C", min_cpu, "-T", min_task_tid, min_task_pid, NULL);
+
+	printf("after slay\n");
+
 	if (slay_pid == -1) {
 		printf("Unable to execute slay (%s)", strerror(errno));
 		return -1;
 	}
+
 
 	return 1;
 }
