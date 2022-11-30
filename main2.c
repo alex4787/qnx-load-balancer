@@ -367,20 +367,20 @@ void multiplyMatrices(int y) {
    }
 }
 
-void utilization_test(int x) {
+void utilization_test(long x) {
 	// core 1
-	pthread_t threads_1[10];
-	pthread_attr_t thread_attrs_1[10];
+	pthread_t threads[24];
+	pthread_attr_t thread_attrs[24];
 	for (int i = 0; i < 10; i++) {
-		pthread_attr_init(thread_attrs_1 + i);
-		thread_attrs_1[i].__param.__sched_priority = 15;
+		pthread_attr_init(thread_attrs + i);
+		thread_attrs[i].__param.__sched_priority = 15;
 	}
 
 	for (int i = 0; i < 10; i++) {
-		pthread_create(threads_1 + i, thread_attrs_1 + i, (void *) multiplyMatrices, (void *) x);
+		pthread_create(threads + i, thread_attrs + i, (void *) multiplyMatrices, (void *) x);
 
 		char tid[64];
-		sprintf(tid, "%d", threads_1[i]);
+		sprintf(tid, "%d", threads[i]);
 		char pid[64];
 		sprintf(pid, "%d", getpid());
 
@@ -388,18 +388,16 @@ void utilization_test(int x) {
 	}
 
 	// core 2
-	pthread_t threads_2[7];
-	pthread_attr_t thread_attrs_2[7];
-	for (int i = 0; i < 7; i++) {
-		pthread_attr_init(thread_attrs_2 + i);
-		thread_attrs_2[i].__param.__sched_priority = 15;
+	for (int i = 10; i < 17 ; i++) {
+		pthread_attr_init(thread_attrs + i);
+		thread_attrs[i].__param.__sched_priority = 15;
 	}
 
-	for (int i = 0; i < 7; i++) {
-		pthread_create(threads_2 + i, thread_attrs_2 + i, (void *) multiplyMatrices, (void *) x);
+	for (int i = 10; i < 17; i++) {
+		pthread_create(threads + i, thread_attrs + i, (void *) multiplyMatrices, (void *) x);
 
 		char tid[64];
-		sprintf(tid, "%d", threads_2[i]);
+		sprintf(tid, "%d", threads[i]);
 		char pid[64];
 		sprintf(pid, "%d", getpid());
 
@@ -407,18 +405,16 @@ void utilization_test(int x) {
 	}
 
 	// core 3
-	pthread_t threads_3[7];
-	pthread_attr_t thread_attrs_3[7];
-	for (int i = 0; i < 7; i++) {
-		pthread_attr_init(thread_attrs_3 + i);
-		thread_attrs_3[i].__param.__sched_priority = 15;
+	for (int i = 17; i < 24; i++) {
+		pthread_attr_init(thread_attrs + i);
+		thread_attrs[i].__param.__sched_priority = 15;
 	}
 
-	for (int i = 0; i < 7; i++) {
-		pthread_create(threads_3 + i, thread_attrs_3 + i, (void *) multiplyMatrices, (void *) x);
+	for (int i = 17; i < 14; i++) {
+		pthread_create(threads + i, thread_attrs + i, (void *) multiplyMatrices, (void *) x);
 
 		char tid[64];
-		sprintf(tid, "%d", threads_3[i]);
+		sprintf(tid, "%d", threads[i]);
 		char pid[64];
 		sprintf(pid, "%d", getpid());
 
