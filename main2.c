@@ -282,22 +282,6 @@ int init_cpu(void) {
 /*	 return 0; */
 /* } */
 
-void performance_test() {
-
-	for (int i = 0; i < 50; i++) {
-		struct timespec start, stop;
-		double accum;
-		clock_gettime( CLOCK_REALTIME, &start);
-		run_load_balancer();
-		clock_gettime( CLOCK_REALTIME, &stop);
-		accum = ( stop.tv_sec - start.tv_sec )
-		             + (double)( stop.tv_nsec - start.tv_nsec )
-		               / (double)1000000000L;
-		printf("TOOK %.10f seconds\n\n", accum);
-		sleep(5);
-	}
-}
-
 void load_balance_test() {
 	pthread_t threads[6];
 	pthread_attr_t thread_attrs[6];
@@ -325,6 +309,121 @@ void load_balance_test() {
 	pthread_cancel(threads[2]);
 	run_load_balancer();
 	run_load_balancer();
+}
+
+void performance_test() {
+	double max_time = 0;
+	double total_time = 0;
+
+	for (int i = 0; i < 50; i++) {
+		struct timespec start, stop;
+		double time;
+		clock_gettime( CLOCK_REALTIME, &start);
+		run_load_balancer();
+		clock_gettime( CLOCK_REALTIME, &stop);
+		time = (stop.tv_sec - start.tv_sec) + (double)(stop.tv_nsec - start.tv_nsec) / (double)1000000000L;
+
+		if (time > max_time) {
+			max_time = time;
+		}
+
+		total_time += time;
+
+		printf("TOOK %.10f seconds\n\n", total_time);
+		sleep(5);
+	}
+}
+
+// function to multiply two matrices
+void multiplyMatrices(int y) {
+	// dividing size of matrix into 4 sub-blocks
+	int x = y/4;
+
+	int first[x][x];
+	int second[x][x];
+	int result[x][x];
+
+	for (int i = 0; i < x; ++i) {
+		for (int j = 0; j < x; ++j) {
+			first[i][j] = i+j;
+			second[i][j] = i+j;
+		}
+	}
+
+   // Initializing elements of matrix mult to 0.
+   for (int i = 0; i < x; ++i) {
+      for (int j = 0; j < x; ++j) {
+         result[i][j] = 0;
+      }
+   }
+
+   // Multiplying first and second matrices and storing it in result
+   for (int i = 0; i < x; ++i) {
+      for (int j = 0; j < x; ++j) {
+         for (int k = 0; k < x; ++k) {
+            result[i][j] += first[i][k] * second[k][j];
+         }
+      }
+   }
+}
+
+void utilization_test(int x) {
+	// core 1
+	pthread_t threads_1[10];
+	pthread_attr_t thread_attrs_1[10];
+	for (int i = 0; i < 10; i++) {
+		pthread_attr_init(thread_attrs_1 + i);
+		thread_attrs_1[i].__param.__sched_priority = 15;
+	}
+
+	for (int i = 0; i < 10; i++) {
+		pthread_create(threads_1 + i, thread_attrs_1 + i, (void *) multiplyMatrices, (void *) x);
+
+		char tid[64];
+		sprintf(tid, "%d", threads_1[i]);
+		char pid[64];
+		sprintf(pid, "%d", getpid());
+
+		spawnlp(P_WAIT, "slay", "slay", "-C", "1", "-T", tid, pid, NULL);
+	}
+
+	// core 2
+	pthread_t threads_2[7];
+	pthread_attr_t thread_attrs_2[7];
+	for (int i = 0; i < 7; i++) {
+		pthread_attr_init(thread_attrs_2 + i);
+		thread_attrs_2[i].__param.__sched_priority = 15;
+	}
+
+	for (int i = 0; i < 7; i++) {
+		pthread_create(threads_2 + i, thread_attrs_2 + i, (void *) multiplyMatrices, (void *) x);
+
+		char tid[64];
+		sprintf(tid, "%d", threads_2[i]);
+		char pid[64];
+		sprintf(pid, "%d", getpid());
+
+		spawnlp(P_WAIT, "slay", "slay", "-C", "2", "-T", tid, pid, NULL);
+	}
+
+	// core 3
+	pthread_t threads_3[7];
+	pthread_attr_t thread_attrs_3[7];
+	for (int i = 0; i < 7; i++) {
+		pthread_attr_init(thread_attrs_3 + i);
+		thread_attrs_3[i].__param.__sched_priority = 15;
+	}
+
+	for (int i = 0; i < 7; i++) {
+		pthread_create(threads_3 + i, thread_attrs_3 + i, (void *) multiplyMatrices, (void *) x);
+
+		char tid[64];
+		sprintf(tid, "%d", threads_3[i]);
+		char pid[64];
+		sprintf(pid, "%d", getpid());
+
+		spawnlp(P_WAIT, "slay", "slay", "-C", "3", "-T", tid, pid, NULL);
+	}
 }
 
 int main(int argc, char *argv[]) {
@@ -368,11 +467,12 @@ int main(int argc, char *argv[]) {
 	/* TraceEvent(_NTO_TRACE_DELEVENTHANDLER, _NTO_TRACE_THREAD, _NTO_TRACE_THCREATE); */
 
 //	load_balance_test();
-	performance_test();
+//	performance_test();
+	utilization_test(32);
 
-//	while (1) {
-//		run_load_balancer();
-//		printf("==================================================\n\n");
-//		sleep(5);
-//	}
+	while (1) {
+		run_load_balancer();
+		printf("==================================================\n\n");
+		sleep(5);
+	}
 }
