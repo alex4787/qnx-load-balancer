@@ -49,6 +49,8 @@ static int MinCpu, MaxCpu, MinLoad, MaxLoad;
 static float AveLoad;
 static debug_thread_t min_task;
 
+
+// first part of the load monitoring phase of the algorithm
 void populate_load_state(int cpu, debug_thread_t thread) {
 	struct load_state_t *cur_load_state = LoadStates + cpu;
 
@@ -67,6 +69,24 @@ void populate_load_state(int cpu, debug_thread_t thread) {
 		cur_load_state->totaltime += thread.sutime;
 
 		printf("total time: %ld\n", cur_load_state->totaltime);
+	}
+}
+
+// second part of the load monitoring phase of the algorithm
+// this function corresponds to equation 1 in the project report
+int get_load_state(int processor_load, int avg_processor_load) {
+	if (processor_load > avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
+		return HEAVY_LOAD;
+	} else if (avg_processor_load * (1 + LOAD_PROPORTION_THRESHOLD)
+			>= processor_load
+			&& processor_load
+					>= avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
+		return NORMAL_LOAD;
+	} else if (processor_load
+			< avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
+		return LIGHT_LOAD;
+	} else {
+		return -1;
 	}
 }
 
@@ -97,22 +117,8 @@ void calculate_cpu_loads() {
 	AveLoad = sum / NumCpus;
 }
 
-int get_load_state(int processor_load, int avg_processor_load) {
-	if (processor_load > avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
-		return HEAVY_LOAD;
-	} else if (avg_processor_load * (1 + LOAD_PROPORTION_THRESHOLD)
-			>= processor_load
-			&& processor_load
-					>= avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
-		return NORMAL_LOAD;
-	} else if (processor_load
-			< avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
-		return LIGHT_LOAD;
-	} else {
-		return -1; // something went wrong
-	}
-}
 
+// load migration part of the algorithm
 int perform_migration(debug_thread_t min_task, int MinCpu) {
 	int slay_pid;
 
@@ -239,29 +245,10 @@ int run_load_balancer() {
 		return 0;
 	}
 
-	// Migrate here
 	printf("migration needed\n");
 
+	// a task migration is performed to move the min_task (from the heaviest loaded core) to the core with the lightest load
 	perform_migration(min_task, MinCpu);
-
-//	int slay_pid;
-//
-//	char min_task_pid[64];
-//	sprintf(min_task_pid, "%d", min_task.pid);
-//
-//	char min_cpu[64];
-//	sprintf(min_cpu, "%d", MinCpu);
-//
-//	char min_task_tid[64];
-//	sprintf(min_task_tid, "%d", min_task.tid);
-//
-//	slay_pid = spawnlp(P_WAIT, "slay", "slay", "-C", min_cpu, "-T", min_task_tid, min_task_pid, NULL);
-//
-//	if (slay_pid == -1) {
-//		printf("Unable to execute slay (%s)", strerror(errno));
-//		return -1;
-//	}
-
 
 	return 1;
 }
@@ -393,9 +380,11 @@ void multiplyMatrices(int y) {
 }
 
 void utilization_test(long x) {
-	// core 1
 	pthread_t threads[24];
 	pthread_attr_t thread_attrs[24];
+
+	// core 1
+	// add 10 tasks running matrix multiplication on core 1
 	for (int i = 0; i < 10; i++) {
 		pthread_attr_init(thread_attrs + i);
 		thread_attrs[i].__param.__sched_priority = 15;
@@ -413,6 +402,7 @@ void utilization_test(long x) {
 	}
 
 	// core 2
+	// add 7 tasks running matrix multiplication on core 2
 	for (int i = 10; i < 17 ; i++) {
 		pthread_attr_init(thread_attrs + i);
 		thread_attrs[i].__param.__sched_priority = 15;
@@ -430,6 +420,7 @@ void utilization_test(long x) {
 	}
 
 	// core 3
+	// add 7 tasks running matrix multiplication on core 3
 	for (int i = 17; i < 24; i++) {
 		pthread_attr_init(thread_attrs + i);
 		thread_attrs[i].__param.__sched_priority = 15;
