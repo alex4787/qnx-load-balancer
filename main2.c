@@ -47,6 +47,7 @@ static struct load_state_t LoadStates[MAX_CPUS];
 static int NumCpus = 0;
 static int MinCpu, MaxCpu, MinLoad, MaxLoad;
 static float AveLoad;
+static debug_thread_t min_task;
 
 void populate_load_state(int cpu, debug_thread_t thread) {
 	struct load_state_t *cur_load_state = LoadStates + cpu;
@@ -110,6 +111,28 @@ int get_load_state(int processor_load, int avg_processor_load) {
 	} else {
 		return -1; // something went wrong
 	}
+}
+
+int perform_migration(debug_thread_t min_task, int MinCpu) {
+	int slay_pid;
+
+	char min_task_pid[64];
+	sprintf(min_task_pid, "%d", min_task.pid);
+
+	char min_cpu[64];
+	sprintf(min_cpu, "%d", MinCpu);
+
+	char min_task_tid[64];
+	sprintf(min_task_tid, "%d", min_task.tid);
+
+	slay_pid = spawnlp(P_WAIT, "slay", "slay", "-C", min_cpu, "-T", min_task_tid, min_task_pid, NULL);
+
+	if (slay_pid == -1) {
+		printf("Unable to execute slay (%s)", strerror(errno));
+		return -1;
+	}
+
+	return 0;
 }
 
 int run_load_balancer() {
@@ -210,7 +233,7 @@ int run_load_balancer() {
 	}
 
 	// Part B5
-	debug_thread_t min_task = *LoadStates[MaxCpu].min_task;
+	min_task = *LoadStates[MaxCpu].min_task;
 	if (MinLoad + min_task.sutime >= MaxLoad - min_task.sutime) {
 		printf("no migration needed 2\n");
 		return 0;
@@ -219,23 +242,25 @@ int run_load_balancer() {
 	// Migrate here
 	printf("migration needed\n");
 
-	int slay_pid;
+	perform_migration(min_task, MinCpu);
 
-	char min_task_pid[64];
-	sprintf(min_task_pid, "%d", min_task.pid);
-
-	char min_cpu[64];
-	sprintf(min_cpu, "%d", MinCpu);
-
-	char min_task_tid[64];
-	sprintf(min_task_tid, "%d", min_task.tid);
-
-	slay_pid = spawnlp(P_WAIT, "slay", "slay", "-C", min_cpu, "-T", min_task_tid, min_task_pid, NULL);
-
-	if (slay_pid == -1) {
-		printf("Unable to execute slay (%s)", strerror(errno));
-		return -1;
-	}
+//	int slay_pid;
+//
+//	char min_task_pid[64];
+//	sprintf(min_task_pid, "%d", min_task.pid);
+//
+//	char min_cpu[64];
+//	sprintf(min_cpu, "%d", MinCpu);
+//
+//	char min_task_tid[64];
+//	sprintf(min_task_tid, "%d", min_task.tid);
+//
+//	slay_pid = spawnlp(P_WAIT, "slay", "slay", "-C", min_cpu, "-T", min_task_tid, min_task_pid, NULL);
+//
+//	if (slay_pid == -1) {
+//		printf("Unable to execute slay (%s)", strerror(errno));
+//		return -1;
+//	}
 
 
 	return 1;
