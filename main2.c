@@ -45,8 +45,11 @@ struct load_state_t {
 static struct load_state_t LoadStates[MAX_CPUS];
 
 static int NumCpus = 0;
+// store the cpu with the lightest and heaviest loads, as well as the value of these loads
 static int MinCpu, MaxCpu, MinLoad, MaxLoad;
+// average load across the entire system
 static float AveLoad;
+// task with the smallest load, from the cpu with the heaviest load
 static debug_thread_t min_task;
 
 
@@ -90,6 +93,8 @@ int get_load_state(int processor_load, int avg_processor_load) {
 	}
 }
 
+// finds the cpus with the lightest and heaviest loads, and what these load values are
+// calculates the average load across the entire system
 void calculate_cpu_loads() {
 	float sum;
 
