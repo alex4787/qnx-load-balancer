@@ -53,6 +53,25 @@ static float AveLoad;
 static debug_thread_t min_task;
 
 
+// FOR CPU UTILIZATION
+static unsigned long LastSutime[MAX_CPUS];
+static unsigned long LastNsec[MAX_CPUS];
+static unsigned long Loads[MAX_CPUS];
+static int ProcFd = -1;
+
+
+static _uint64 nanoseconds( void ) {
+	_uint64 sec, usec;
+	struct timeval tval;
+
+	gettimeofday( &tval, NULL );
+	sec = tval.tv_sec;
+	usec = tval.tv_usec;
+	return( ( ( sec * 1000000 ) + usec ) * 1000 );
+}
+
+
+
 // first part of the load monitoring phase of the algorithm
 void populate_load_state(int cpu, debug_thread_t thread) {
 	struct load_state_t *cur_load_state = LoadStates + cpu;
@@ -69,7 +88,7 @@ void populate_load_state(int cpu, debug_thread_t thread) {
 	}
 
 	if (thread.state == STATE_READY) {
-		cur_load_state->totaltime += thread.sutime;
+		LoadStates[cpu].totaltime += thread.sutime;
 
 		printf("total time: %ld\n", cur_load_state->totaltime);
 	}
@@ -216,11 +235,13 @@ int run_load_balancer() {
 						}
 
 						cpu = threadinfo.last_cpu;
-						printf("\ttid=%d cpu=%d\n", tid, cpu);
+						printf("\ttid=%d cpu=%d state=%d\n", tid, cpu, threadinfo.state);
 
 						// Part A
 						// Populate load_state_t array
 						populate_load_state(cpu, threadinfo);
+
+						printf("\ttotaltime=%ld\n", LoadStates[cpu].totaltime);
 					}
 				}
 			}
@@ -260,7 +281,7 @@ int run_load_balancer() {
 
 int init_cpu(void) {
 	int i;
-	int ProcFd = -1;
+	ProcFd = -1;
 	debug_thread_t debug_data;
 
 	memset(&debug_data, 0, sizeof(debug_data));
@@ -284,6 +305,20 @@ int init_cpu(void) {
 		if (fcntl(ProcFd, F_SETFD, i) != -1) {
 			/* Grab this value */
 			NumCpus = _syspage_ptr->num_cpu;
+
+			for( i=0; i<NumCpus; i++ ) {
+				/*
+				* the sutime of idle thread is how much
+				* time that thread has been using, we can compare this
+				* against how much time has passed to get an idea of the
+				* load on the system.
+				*/
+				debug_data.tid = i + 1;
+				devctl( ProcFd, DCMD_PROC_TIDSTATUS, &debug_data, sizeof( debug_data ), NULL );
+				LastSutime[i] = debug_data.sutime;
+				LastNsec[i] = nanoseconds();
+			}
+
 			printf("System has: %d CPUs\n", NumCpus);
 
 			return (EOK);
@@ -292,6 +327,46 @@ int init_cpu(void) {
 
 	close(ProcFd);
 	return (-1);
+}
+
+int sample_cpus( void ) {
+	int i;
+	debug_thread_t debug_data;
+	_uint64 current_nsec, sutime_delta, time_delta;
+
+	memset( &debug_data, 0, sizeof( debug_data ) );
+
+	for( i=0; i<NumCpus; i++ ) {
+		/* Get the sutime of the idle thread #i+1 */
+		debug_data.tid = i + 1;
+		devctl( ProcFd, DCMD_PROC_TIDSTATUS,
+		&debug_data, sizeof( debug_data ), NULL );
+
+		/* Get the current time */
+		current_nsec = nanoseconds();
+
+		/* Get the deltas between now and the last samples */
+		sutime_delta = debug_data.sutime - LastSutime[i];
+		time_delta = current_nsec - LastNsec[i];
+
+		/* Figure out the load */
+		Loads[i] = 100.0 - ( (float)( sutime_delta * 100 ) / (float)time_delta );
+
+		/*
+		* Flat out strange rounding issues.
+		*/
+		if( Loads[i] < 0 ) {
+			Loads[i] = 0;
+		}
+
+		printf("CPU %d utilization: %.5f\n", i, Loads[i]);
+
+		/* Keep these for reference in the next cycle */
+		LastNsec[i] = current_nsec;
+		LastSutime[i] = debug_data.sutime;
+	}
+
+	return EOK;
 }
 
 /* int do_something(event_data_t* e_d) { */
@@ -326,6 +401,11 @@ void load_balance_test() {
 	pthread_cancel(threads[2]);
 	run_load_balancer();
 	run_load_balancer();
+
+	sleep(10);
+	for(int i = 0; i < NumCpus; i++) {
+		printf("CPU %d totaltime: %.5f\n", i, LoadStates[i].totaltime);
+	}
 }
 
 void performance_test() {
@@ -350,6 +430,7 @@ void performance_test() {
 		sleep(5);
 	}
 }
+
 
 // function to multiply two matrices
 void multiplyMatrices(int y) {
@@ -403,7 +484,9 @@ void utilization_test(long x) {
 		char pid[64];
 		sprintf(pid, "%d", getpid());
 
-		spawnlp(P_WAIT, "slay", "slay", "-C", "1", "-T", tid, pid, NULL);
+		//spawnlp(P_WAIT, "slay", "slay", "-C", "1", "-T", tid, pid, NULL);
+
+		run_load_balancer();
 	}
 
 	// core 2
@@ -421,7 +504,9 @@ void utilization_test(long x) {
 		char pid[64];
 		sprintf(pid, "%d", getpid());
 
-		spawnlp(P_WAIT, "slay", "slay", "-C", "2", "-T", tid, pid, NULL);
+		//spawnlp(P_WAIT, "slay", "slay", "-C", "2", "-T", tid, pid, NULL);
+
+		run_load_balancer();
 	}
 
 	// core 3
@@ -431,7 +516,7 @@ void utilization_test(long x) {
 		thread_attrs[i].__param.__sched_priority = 15;
 	}
 
-	for (int i = 17; i < 14; i++) {
+	for (int i = 17; i < 24; i++) {
 		pthread_create(threads + i, thread_attrs + i, (void *) multiplyMatrices, (void *) x);
 
 		char tid[64];
@@ -439,8 +524,22 @@ void utilization_test(long x) {
 		char pid[64];
 		sprintf(pid, "%d", getpid());
 
-		spawnlp(P_WAIT, "slay", "slay", "-C", "3", "-T", tid, pid, NULL);
+		//spawnlp(P_WAIT, "slay", "slay", "-C", "3", "-T", tid, pid, NULL);
+
+		run_load_balancer();
 	}
+	sleep(5);
+
+	for(int i = 0; i < NumCpus; i++) {
+		printf("CPU %d totaltime: %ld\n", i, LoadStates[i].totaltime);
+	}
+
+	sample_cpus();
+
+//	for(int i = 0; i < NumCpus; i++) {
+//		float utilization = ((float) LoadStates[i].totaltime / (float) MaxLoad) * 100.0f;
+//		printf("CPU %d utilization: %.5f\n", i, utilization);
+//	}
 }
 
 int main(int argc, char *argv[]) {
@@ -485,11 +584,11 @@ int main(int argc, char *argv[]) {
 
 //	load_balance_test();
 //	performance_test();
-	utilization_test(32);
+	utilization_test(512);
 
-	while (1) {
-		run_load_balancer();
-		printf("==================================================\n\n");
-		sleep(5);
-	}
+//	while (1) {
+//		run_load_balancer();
+//		printf("==================================================\n\n");
+//		sleep(5);
+//	}
 }
