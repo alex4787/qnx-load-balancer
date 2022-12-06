@@ -52,25 +52,67 @@ static float AveLoad;
 // task with the smallest load, from the cpu with the heaviest load
 static debug_thread_t min_task;
 
+static DIR *dir;
 
-// FOR CPU UTILIZATION
-static unsigned long LastSutime[MAX_CPUS];
-static unsigned long LastNsec[MAX_CPUS];
-static unsigned long Loads[MAX_CPUS];
-static int ProcFd = -1;
+static unsigned    *rmaskp, *imaskp;
+static void		   *my_runmask;
+
+struct arg_struct {
+    int value;
+    unsigned int cpu;
+};
 
 
-static _uint64 nanoseconds( void ) {
-	_uint64 sec, usec;
-	struct timeval tval;
+// CORE FUNCTIONALITY
+void populate_load_state(int, debug_thread_t);
+int get_load_state(int, int);
+void calculate_cpu_loads();
+int perform_migration(pid_t, int, int);
+int transfer_task(pid_t, int);
+int run_load_balancer();
+int init_cpu(void);
+void init_runmask(void **);
+void access_runmask(void *);
+void set_runmask(void *);
+void set_runmask_ext(pid_t, int, void*);
 
-	gettimeofday( &tval, NULL );
-	sec = tval.tv_sec;
-	usec = tval.tv_usec;
-	return( ( ( sec * 1000000 ) + usec ) * 1000 );
+// TEST SUITE
+void *run_task(void *);
+
+void load_balance_test();
+void performance_test();
+void utilization_test();
+
+
+int main() {
+	// Initialize number of CPUs
+	NumCpus = _syspage_ptr->num_cpu;
+
+	// Open /proc directory
+	dir = opendir("/proc");
+
+	if (dir == NULL) {
+		fprintf(stderr, "Unable to open /proc\n");
+		return -1;
+	}
+
+	// Initialize runmask and necessary permissions
+	procmgr_ability(0,
+		PROCMGR_ADN_NONROOT|PROCMGR_AOP_ALLOW|PROCMGR_AID_XPROCESS_DEBUG,
+		PROCMGR_AID_EOL);
+
+	init_runmask(&my_runmask);
+	RMSK_SET(0, rmaskp);
+	RMSK_CLR(0, imaskp);
+	set_runmask(my_runmask);
+
+	// Tests
+//	load_balance_test();
+//	performance_test();
+	utilization_test();
+
+	return 0;
 }
-
-
 
 // first part of the load monitoring phase of the algorithm
 void populate_load_state(int cpu, debug_thread_t thread) {
@@ -79,19 +121,17 @@ void populate_load_state(int cpu, debug_thread_t thread) {
 	if (cur_load_state->min_task == NULL) {
 		cur_load_state->min_task = malloc(sizeof(load_state_t));
 		memcpy(cur_load_state->min_task, &thread, sizeof(load_state_t));
-		printf("new min_task for cpu=%d: pid=%d tid=%d\n", cpu, thread.pid,
-				thread.tid);
+//		printf("new min_task for cpu=%d: pid=%d tid=%d\n", cpu, thread.pid,
+//				thread.tid);
 	} else if (thread.sutime < cur_load_state->min_task->sutime) {
 		memcpy(cur_load_state->min_task, &thread, sizeof(load_state_t));
-		printf("new min_task for cpu=%d: pid=%d tid=%d\n", cpu, thread.pid,
-				thread.tid);
+//		printf("new min_task for cpu=%d: pid=%d tid=%d\n", cpu, thread.pid,
+//				thread.tid);
 	}
 
-	if (thread.state == STATE_READY) {
-		LoadStates[cpu].totaltime += thread.sutime;
+	LoadStates[cpu].totaltime += thread.sutime;
 
-		printf("total time: %ld\n", cur_load_state->totaltime);
-	}
+	printf("total time: %ld\n", cur_load_state->totaltime);
 }
 
 // second part of the load monitoring phase of the algorithm
@@ -123,7 +163,7 @@ void calculate_cpu_loads() {
 	MaxCpu = -1;
 	AveLoad = -1;
 
-	for (int i = 0; i < NumCpus; i++) {
+	for (int i = 1; i < NumCpus; i++) {
 		uint64_t totaltime = LoadStates[i].totaltime;
 
 		sum += totaltime;
@@ -138,44 +178,32 @@ void calculate_cpu_loads() {
 		}
 	}
 
-	AveLoad = sum / NumCpus;
+	AveLoad = sum / (NumCpus - 1);
 }
 
-
 // load migration part of the algorithm
-int perform_migration(debug_thread_t min_task, int MinCpu) {
-	int slay_pid;
+int perform_migration(pid_t min_task_pid, int min_task_tid, int MinCpu) {
+	void *runmask;
+	init_runmask(&runmask);
 
-	char min_task_pid[64];
-	sprintf(min_task_pid, "%d", min_task.pid);
+	RMSK_SET(MinCpu, rmaskp);
 
-	char min_cpu[64];
-	sprintf(min_cpu, "%d", MinCpu);
-
-	char min_task_tid[64];
-	sprintf(min_task_tid, "%d", min_task.tid);
-
-	slay_pid = spawnlp(P_WAIT, "slay", "slay", "-C", min_cpu, "-T", min_task_tid, min_task_pid, NULL);
-
-	if (slay_pid == -1) {
-		printf("Unable to execute slay (%s)", strerror(errno));
-		return -1;
+	if (min_task_pid == getpid()) {
+		min_task_pid = 0;
 	}
+
+	printf("Moving [pid=%d tid=%d] to CPU %d\n", min_task_pid, min_task_tid, MinCpu);
+
+	set_runmask_ext(min_task_pid, min_task_tid, runmask);
 
 	return 0;
 }
 
 int run_load_balancer() {
-	DIR *dir;
-	char fname[PATH_MAX];
+	return transfer_task(-1, -1);
+}
 
-	dir = opendir("/proc");
-
-	if (dir == NULL) {
-		fprintf(stderr, "Unable to open %s\n", fname);
-		return -1;
-	}
-
+int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 	struct dirent *dirent;
 	debug_process_t procinfo;
 
@@ -191,7 +219,7 @@ int run_load_balancer() {
 		if (isdigit(dirent->d_name[0])) {
 			int pid = atoi(dirent->d_name);
 
-			// Skip procnto
+			// Skip all other
 			if (pid == 1) {
 				continue;
 			}
@@ -210,9 +238,17 @@ int run_load_balancer() {
 			if ((procstatus = devctl(fd, DCMD_PROC_INFO, &procinfo,
 					sizeof procinfo, 0)) != -1) {
 				int lasttid, tid, cpu;
+//				void *runmask;
 
-				printf("\npid=%d [proc_status=%d num_threads=%d]\n", pid,
-						procstatus, procinfo.num_threads);
+				if (pid == getpid()) {
+					printf("\npid=%d [proc_status=%d num_threads=%d]\n", pid,
+							procstatus, procinfo.num_threads);
+				} else {
+					continue;
+//					init_runmask(&runmask);
+//					RMSK_SET(0, rmaskp);
+//					RMSK_SET(0, imaskp);
+				}
 
 				if (procinfo.flags & _NTO_PF_ZOMBIE) {
 					close(fd);
@@ -226,7 +262,7 @@ int run_load_balancer() {
 						// Get thread info
 						if ((status = devctl(fd, DCMD_PROC_TIDSTATUS,
 								&threadinfo, sizeof(threadinfo), NULL)) != EOK) {
-							printf("error status=%d\n", status);
+//							printf("error status=%d\n", status);
 							break;
 						}
 						tid = threadinfo.tid;
@@ -235,13 +271,19 @@ int run_load_balancer() {
 						}
 
 						cpu = threadinfo.last_cpu;
-						printf("\ttid=%d cpu=%d state=%d\n", tid, cpu, threadinfo.state);
 
-						// Part A
-						// Populate load_state_t array
-						populate_load_state(cpu, threadinfo);
+						if (pid != getpid()) {
+//							if (cpu != 0 && threadinfo.state)
+//								set_runmask_ext(pid, tid, runmask);
+						} else if (tid != gettid()) {
+							printf("\ttid=%d cpu=%d state=%d\n", tid, cpu, threadinfo.state);
 
-						printf("\ttotaltime=%ld\n", LoadStates[cpu].totaltime);
+							// Part A
+							// Populate load_state_t array
+							populate_load_state(cpu, threadinfo);
+
+							printf("\t\ttotaltime=%ld\n", LoadStates[cpu].totaltime);
+						}
 					}
 				}
 			}
@@ -258,167 +300,186 @@ int run_load_balancer() {
 	int load_state_min_core = get_load_state(MinLoad, AveLoad);
 	int load_state_max_core = get_load_state(MaxLoad, AveLoad);
 
-	// Part B4
-	if (load_state_max_core != HEAVY_LOAD || load_state_min_core != LIGHT_LOAD) {
-		printf("no migration needed 1\n");
-		return 0;
-	}
+	if (transfer_task_pid == -1 && transfer_task_tid == -1) {
+		// Part B4
+		if (load_state_max_core != HEAVY_LOAD || load_state_min_core != LIGHT_LOAD) {
+			printf("no migration needed 1\n");
+			return 0;
+		}
 
-	// Part B5
-	min_task = *LoadStates[MaxCpu].min_task;
-	if (MinLoad + min_task.sutime >= MaxLoad - min_task.sutime) {
-		printf("no migration needed 2\n");
-		return 0;
-	}
+		// Part B5
+		min_task = *LoadStates[MaxCpu].min_task;
+		if (MinLoad + min_task.sutime >= MaxLoad - min_task.sutime) {
+			printf("no migration needed 2\n");
+			return 0;
+		}
 
-	printf("migration needed\n");
+		transfer_task_pid = min_task.pid;
+		transfer_task_tid = min_task.tid;
+	}
 
 	// a task migration is performed to move the min_task (from the heaviest loaded core) to the core with the lightest load
-	perform_migration(min_task, MinCpu);
+	perform_migration(transfer_task_pid, transfer_task_tid, MinCpu);
 
 	return 1;
 }
 
-int init_cpu(void) {
-	int i;
-	ProcFd = -1;
-	debug_thread_t debug_data;
+void init_runmask(void **runmask) {
+	int         *rsizep, size;
+	unsigned    num_elements = 0;
+	int 		masksize_bytes;
 
-	memset(&debug_data, 0, sizeof(debug_data));
+	/* Determine the number of array elements required to hold
+	 * the runmasks, based on the number of CPUs in the system. */
+	num_elements = RMSK_SIZE(_syspage_ptr->num_cpu);
 
-	/*
-	 * Open a connection to proc to talk over.
-	 */
-	ProcFd = open("/proc/1/as", O_RDONLY);
-	if (ProcFd == -1) {
-		fprintf( stderr, "pload: Unable to access procnto: %s\n",
-				strerror( errno));
-		fflush( stderr);
-		return -1;
+	/* Determine the size of the runmask, in bytes. */
+	masksize_bytes = num_elements * sizeof(unsigned);
+
+	/* Allocate memory for the data structure that we'll pass
+	 * to ThreadCtl(). We need space for an integer (the number
+	 * of elements in each mask array) and the two masks
+	 * (runmask and inherit mask). */
+
+	size = sizeof(int) + 2 * masksize_bytes;
+	if ((*runmask = malloc(size)) == NULL) {
+		exit(-1);
+	} else {
+		memset(*runmask, 0x00, size);
+
+		/* Set up pointers to the "members" of the structure. */
+		rsizep = (int *)*runmask;
+		rmaskp = rsizep + 1;
+		imaskp = rmaskp + num_elements;
+
+		/* Set the size. */
+		*rsizep = num_elements;
 	}
-
-	i = fcntl(ProcFd, F_GETFD);
-
-	if (i != -1) {
-		i |= FD_CLOEXEC;
-
-		if (fcntl(ProcFd, F_SETFD, i) != -1) {
-			/* Grab this value */
-			NumCpus = _syspage_ptr->num_cpu;
-
-			for( i=0; i<NumCpus; i++ ) {
-				/*
-				* the sutime of idle thread is how much
-				* time that thread has been using, we can compare this
-				* against how much time has passed to get an idea of the
-				* load on the system.
-				*/
-				debug_data.tid = i + 1;
-				devctl( ProcFd, DCMD_PROC_TIDSTATUS, &debug_data, sizeof( debug_data ), NULL );
-				LastSutime[i] = debug_data.sutime;
-				LastNsec[i] = nanoseconds();
-			}
-
-			printf("System has: %d CPUs\n", NumCpus);
-
-			return (EOK);
-		}
-	}
-
-	close(ProcFd);
-	return (-1);
 }
 
-int sample_cpus( void ) {
-	int i;
-	debug_thread_t debug_data;
-	_uint64 current_nsec, sutime_delta, time_delta;
+void access_runmask(void *runmask) {
+	int         *rsizep, size;
+	unsigned    num_elements = 0;
+	int 		masksize_bytes;
 
-	memset( &debug_data, 0, sizeof( debug_data ) );
+	/* Determine the number of array elements required to hold
+	 * the runmasks, based on the number of CPUs in the system. */
+	num_elements = RMSK_SIZE(_syspage_ptr->num_cpu);
 
-	for( i=0; i<NumCpus; i++ ) {
-		/* Get the sutime of the idle thread #i+1 */
-		debug_data.tid = i + 1;
-		devctl( ProcFd, DCMD_PROC_TIDSTATUS,
-		&debug_data, sizeof( debug_data ), NULL );
+	/* Determine the size of the runmask, in bytes. */
+	masksize_bytes = num_elements * sizeof(unsigned);
 
-		/* Get the current time */
-		current_nsec = nanoseconds();
+	/* Allocate memory for the data structure that we'll pass
+	 * to ThreadCtl(). We need space for an integer (the number
+	 * of elements in each mask array) and the two masks
+	 * (runmask and inherit mask). */
 
-		/* Get the deltas between now and the last samples */
-		sutime_delta = debug_data.sutime - LastSutime[i];
-		time_delta = current_nsec - LastNsec[i];
+	size = sizeof(int) + 2 * masksize_bytes;
 
-		/* Figure out the load */
-		Loads[i] = 100.0 - ( (float)( sutime_delta * 100 ) / (float)time_delta );
-
-		/*
-		* Flat out strange rounding issues.
-		*/
-		if( Loads[i] < 0 ) {
-			Loads[i] = 0;
-		}
-
-		printf("CPU %d utilization: %.5f\n", i, Loads[i]);
-
-		/* Keep these for reference in the next cycle */
-		LastNsec[i] = current_nsec;
-		LastSutime[i] = debug_data.sutime;
-	}
-
-	return EOK;
+	/* Set up pointers to the "members" of the structure. */
+	rsizep = (int *)runmask;
+	rmaskp = rsizep + 1;
+	imaskp = rmaskp + num_elements;
 }
 
-/* int do_something(event_data_t* e_d) { */
-/*	 printf("Hello\n"); */
-/*	 return 0; */
-/* } */
+void set_runmask(void *runmask) {
+	if (ThreadCtl(_NTO_TCTL_RUNMASK_GET_AND_SET_INHERIT, runmask) == -1) {
+		perror ("ThreadCtl()");
+		exit(-1);
+	}
+}
+
+void set_runmask_ext(pid_t pid, int tid, void *runmask) {
+	printf("pid=%d tid=%d\n", pid, tid);
+	if (ThreadCtlExt(pid, tid, _NTO_TCTL_RUNMASK_GET_AND_SET_INHERIT, runmask) == -1) {
+		perror ("ThreadCtlExt()");
+		exit(-1);
+	}
+}
+
+// ============================== TEST SUITE ==============================
+
+void *run_task(void *_args) {
+	struct arg_struct *args = (struct arg_struct *)_args;
+	int cpu = args->cpu;
+
+	void *runmask;
+	init_runmask(&runmask);
+	RMSK_SET(cpu, rmaskp);
+	set_runmask(runmask);
+
+	int msec = args->value;
+	struct timespec when;
+
+	printf("[%d] Sleeping for %d milliseconds\n", gettid(), msec);
+
+	when.tv_sec = 0;
+	when.tv_nsec = msec * 1000000;
+	nanospin(&when);
+
+	printf("[%d] Done after %d milliseconds\n", gettid(), msec);
+}
 
 void load_balance_test() {
 	pthread_t threads[6];
 	pthread_attr_t thread_attrs[6];
+	pid_t pid = getpid();
+	struct arg_struct arg_structs[6];
+	int tid;
 
-	printf("pid=%d\n", getpid());
+	printf("pid=%d\n", pid);
 
 	for (int i = 0; i < 6; i++) {
 		pthread_attr_init(thread_attrs + i);
-		thread_attrs[i].__param.__sched_priority = 15;
+		thread_attrs[i].__param.__sched_priority = 255;
 	}
 
-	pthread_create(threads + 0, thread_attrs + 0, (void *) usleep, (void *) 100000);
-	pthread_create(threads + 1, thread_attrs + 1, (void *) usleep, (void *) 50000);
-	pthread_create(threads + 2, thread_attrs + 2, (void *) usleep, (void *) 50000);
-	run_load_balancer();
+	arg_structs[0].value = 1000;
+	arg_structs[0].cpu = 1;
+	pthread_create(threads + 0, thread_attrs + 0, run_task, (void *) (arg_structs));
 
-	pthread_create(threads + 3, thread_attrs + 3, (void *) usleep, (void *) 50000);
-	run_load_balancer();
+	arg_structs[1].value = 500;
+	arg_structs[1].cpu = 2;
+	pthread_create(threads + 1, thread_attrs + 1, run_task, (void *) (arg_structs + 1));
 
-	pthread_create(threads + 4, thread_attrs + 4, (void *) usleep, (void *) 50000);
-	run_load_balancer();
+	arg_structs[2].value = 500;
+	arg_structs[2].cpu = 3;
+	pthread_create(threads + 2, thread_attrs + 2, run_task, (void *) (arg_structs + 2));
+	transfer_task(pid, threads[2]);
 
-	pthread_create(threads + 5, thread_attrs + 5, (void *) usleep, (void *) 50000);
+	arg_structs[3].value = 500;
+	arg_structs[3].cpu = 1;
+	pthread_create(threads + 3, thread_attrs + 3, run_task, (void *) (arg_structs + 3));
+	transfer_task(pid, threads[3]);
+
+	arg_structs[4].value = 500;
+	arg_structs[4].cpu = 1;
+	pthread_create(threads + 4, thread_attrs + 4, run_task, (void *) (arg_structs + 4));
+	transfer_task(pid, threads[4]);
+
+	arg_structs[5].value = 500;
+	arg_structs[5].cpu = 1;
+	pthread_create(threads + 5, thread_attrs + 5, run_task, (void *) (arg_structs + 5));
 
 	pthread_cancel(threads[2]);
 	run_load_balancer();
-	run_load_balancer();
-
-	sleep(10);
-	for(int i = 0; i < NumCpus; i++) {
-		printf("CPU %d totaltime: %.5f\n", i, LoadStates[i].totaltime);
-	}
 }
 
 void performance_test() {
-	double max_time = 0;
-	double total_time = 0;
+	long max_time = 0;
+	long total_time = 0;
+	long avg_time = 0;
+	long time;
+	struct timespec start, stop;
 
-	for (int i = 0; i < 50; i++) {
-		struct timespec start, stop;
-		double time;
-		clock_gettime( CLOCK_REALTIME, &start);
+	int trials = 50;
+
+	for (int i = 0; i < trials; i++) {
+		clock_gettime( CLOCK_PROCESS_CPUTIME_ID, &start);
 		run_load_balancer();
-		clock_gettime( CLOCK_REALTIME, &stop);
-		time = (stop.tv_sec - start.tv_sec) + (double)(stop.tv_nsec - start.tv_nsec) / (double)1000000000L;
+		clock_gettime( CLOCK_PROCESS_CPUTIME_ID, &stop);
+
+		time = ((stop.tv_sec - start.tv_sec) * 1000000) + (stop.tv_nsec - start.tv_nsec);
 
 		if (time > max_time) {
 			max_time = time;
@@ -426,16 +487,54 @@ void performance_test() {
 
 		total_time += time;
 
-		printf("TOOK %.10f seconds\n\n", total_time);
-		sleep(5);
+		printf("TOOK %ld nanoseconds\n\n", time);
+
+		if ((i + 1) % 10 == 0) {
+			avg_time = (long) ((double) total_time / (double) (i+1));
+			printf("====== %d tests: total=%lu average=%lu max=%lu\n\n", (i+1), total_time, avg_time, max_time);
+		}
+	}
+
+	total_time = 0;
+	max_time = 0;
+
+	pid_t pid = getpid();
+	int tid = gettid();
+
+	for (int i = 0; i < trials; i++) {
+		clock_gettime( CLOCK_PROCESS_CPUTIME_ID, &start);
+		transfer_task(pid, tid);
+		clock_gettime( CLOCK_PROCESS_CPUTIME_ID, &stop);
+
+		time = ((stop.tv_sec - start.tv_sec) * 1000000) + (stop.tv_nsec - start.tv_nsec);
+
+		if (time > max_time) {
+			max_time = time;
+		}
+
+		total_time += time;
+
+		printf("TOOK %ld nanoseconds\n\n", time);
+
+		if ((i + 1) % 10 == 0) {
+			avg_time = (long) ((double) total_time / (double) (i+1));
+			printf("====== %d tests: total=%lu average=%lu max=%lu\n\n", (i+1), total_time, avg_time, max_time);
+		}
 	}
 }
 
-
 // function to multiply two matrices
-void multiplyMatrices(int y) {
+void *multiplyMatrices(void *_args) {
+	struct arg_struct *args = (struct arg_struct *)_args;
+	int cpu = args->cpu;
+
+	void *runmask;
+	init_runmask(&runmask);
+	RMSK_SET(cpu, rmaskp);
+	set_runmask(runmask);
+
 	// dividing size of matrix into 4 sub-blocks
-	int x = y/4;
+	int x = args->value / 4;
 
 	int first[x][x];
 	int second[x][x];
@@ -465,130 +564,45 @@ void multiplyMatrices(int y) {
    }
 }
 
-void utilization_test(long x) {
-	pthread_t threads[24];
-	pthread_attr_t thread_attrs[24];
+void utilization_test() {
+	long time;
+	struct timespec start, stop;
 
-	// core 1
-	// add 10 tasks running matrix multiplication on core 1
-	for (int i = 0; i < 10; i++) {
-		pthread_attr_init(thread_attrs + i);
-		thread_attrs[i].__param.__sched_priority = 15;
+	for (int x = 32; x <= 256; x *= 2) {
+		printf("%d\n", x);
+		pthread_t threads[24];
+		pthread_attr_t thread_attrs[24];
+
+		struct arg_struct args;
+		args.value = x;
+
+		for (int i = 0; i < 24; i++) {
+			pthread_attr_init(thread_attrs + i);
+			thread_attrs[i].__param.__sched_priority = 15;
+		}
+
+		clock_gettime( CLOCK_PROCESS_CPUTIME_ID, &start);
+
+		// add 10 tasks running matrix multiplication on core 1, 7 on core 2, and 7 on core 3.
+		args.cpu = 1;
+		for (int i = 0; i < 24; i++) {
+			if (i < 10)
+				args.cpu = 1;
+			else if (i < 17)
+				args.cpu = 2;
+			else
+				args.cpu = 3;
+
+			pthread_create(threads + i, thread_attrs + i, (void *) multiplyMatrices, (void *) &args);
+//			transfer_task(getpid(), threads[i]);
+		}
+
+		for (int i = 0; i < 24; i++)
+		   pthread_join(threads[i], NULL);
+
+		clock_gettime( CLOCK_PROCESS_CPUTIME_ID, &stop);
+
+		time = ((stop.tv_sec - start.tv_sec) * 1000000) + (stop.tv_nsec - start.tv_nsec);
+		printf("================= TOOK %ld nanoseconds\n\n", time);
 	}
-
-	for (int i = 0; i < 10; i++) {
-		pthread_create(threads + i, thread_attrs + i, (void *) multiplyMatrices, (void *) x);
-
-		char tid[64];
-		sprintf(tid, "%d", threads[i]);
-		char pid[64];
-		sprintf(pid, "%d", getpid());
-
-		//spawnlp(P_WAIT, "slay", "slay", "-C", "1", "-T", tid, pid, NULL);
-
-		run_load_balancer();
-	}
-
-	// core 2
-	// add 7 tasks running matrix multiplication on core 2
-	for (int i = 10; i < 17 ; i++) {
-		pthread_attr_init(thread_attrs + i);
-		thread_attrs[i].__param.__sched_priority = 15;
-	}
-
-	for (int i = 10; i < 17; i++) {
-		pthread_create(threads + i, thread_attrs + i, (void *) multiplyMatrices, (void *) x);
-
-		char tid[64];
-		sprintf(tid, "%d", threads[i]);
-		char pid[64];
-		sprintf(pid, "%d", getpid());
-
-		//spawnlp(P_WAIT, "slay", "slay", "-C", "2", "-T", tid, pid, NULL);
-
-		run_load_balancer();
-	}
-
-	// core 3
-	// add 7 tasks running matrix multiplication on core 3
-	for (int i = 17; i < 24; i++) {
-		pthread_attr_init(thread_attrs + i);
-		thread_attrs[i].__param.__sched_priority = 15;
-	}
-
-	for (int i = 17; i < 24; i++) {
-		pthread_create(threads + i, thread_attrs + i, (void *) multiplyMatrices, (void *) x);
-
-		char tid[64];
-		sprintf(tid, "%d", threads[i]);
-		char pid[64];
-		sprintf(pid, "%d", getpid());
-
-		//spawnlp(P_WAIT, "slay", "slay", "-C", "3", "-T", tid, pid, NULL);
-
-		run_load_balancer();
-	}
-	sleep(5);
-
-	for(int i = 0; i < NumCpus; i++) {
-		printf("CPU %d totaltime: %ld\n", i, LoadStates[i].totaltime);
-	}
-
-	sample_cpus();
-
-//	for(int i = 0; i < NumCpus; i++) {
-//		float utilization = ((float) LoadStates[i].totaltime / (float) MaxLoad) * 100.0f;
-//		printf("CPU %d utilization: %.5f\n", i, utilization);
-//	}
-}
-
-int main(int argc, char *argv[]) {
-
-	if (init_cpu() == -1) {
-		perror("init_cpu() failed\n");
-		return -1;
-	}
-
-	// Meant to add event handler for when thread created
-	/* procmgr_ability(0, */
-	/*	 PROCMGR_ADN_ROOT|PROCMGR_AOP_ALLOW|PROCMGR_AID_TRACE, */
-	/*	 PROCMGR_ADN_ROOT|PROCMGR_AOP_ALLOW|PROCMGR_AID_IO, */
-	/*	 PROCMGR_ADN_NONROOT|PROCMGR_AOP_ALLOW|PROCMGR_AID_TRACE, */
-	/*	 PROCMGR_ADN_NONROOT|PROCMGR_AOP_ALLOW|PROCMGR_AID_IO, */
-	/*	 PROCMGR_AID_EOL); */
-
-	/* TraceEvent(_NTO_TRACE_DELALLCLASSES); */
-	/* TraceEvent(_NTO_TRACE_CLRCLASSPID, _NTO_TRACE_KERCALL); */
-	/* TraceEvent(_NTO_TRACE_CLRCLASSTID, _NTO_TRACE_KERCALL); */
-	/* TraceEvent(_NTO_TRACE_CLRCLASSPID, _NTO_TRACE_THREAD); */
-	/* TraceEvent(_NTO_TRACE_CLRCLASSTID, _NTO_TRACE_THREAD); */
-
-	/* TraceEvent(_NTO_TRACE_SETALLCLASSESFAST); */
-
-	/* if (ThreadCtl(_NTO_TCTL_IO, 0)!=EOK) { */
-	/*	 (void) fprintf(stderr, "argv[0]: Failed to obtain I/O privileges\n"); */
-
-	/*	 return (-1); */
-	/* } */
-
-	/* TraceEvent(_NTO_TRACE_ADDEVENT, _NTO_TRACE_THREAD, _NTO_TRACE_THCREATE); */
-	/* TraceEvent(_NTO_TRACE_ADDEVENTHANDLER, _NTO_TRACE_THREAD, */
-	/*	 _NTO_TRACE_THCREATE, do_something, NULL); */
-	/* TraceEvent(_NTO_TRACE_START); */
-
-	/* sleep(10); */
-
-	/* TraceEvent(_NTO_TRACE_STOP); */
-	/* TraceEvent(_NTO_TRACE_FLUSHBUFFER); */
-	/* TraceEvent(_NTO_TRACE_DELEVENTHANDLER, _NTO_TRACE_THREAD, _NTO_TRACE_THCREATE); */
-
-//	load_balance_test();
-//	performance_test();
-	utilization_test(512);
-
-//	while (1) {
-//		run_load_balancer();
-//		printf("==================================================\n\n");
-//		sleep(5);
-//	}
 }
