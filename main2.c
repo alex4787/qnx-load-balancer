@@ -1,3 +1,12 @@
+/*
+ * main.c
+ *
+ * QNX load balancer implementation using BMP (bound multiprocessing) including related tests.
+ * Created for the final projection in COMP 4900-A Real-time Operating Systems.
+ *
+ * Authors: Morgan Vallati, Alex Chan
+ */
+
 #include <atomic.h>
 #include <libc.h>
 #include <pthread.h>
@@ -28,6 +37,7 @@
 #include <sys/procmgr.h>
 #include <sys/resource.h>
 
+
 #define TRUE 0
 #define FALSE 1
 
@@ -38,30 +48,32 @@
 #define HEAVY_LOAD 2
 #define LOAD_PROPORTION_THRESHOLD 0.2
 
+
+// Total utilization time and thread with smallest load for a CPU
 struct load_state_t {
 	debug_thread_t *min_task;
 	uint64_t totaltime;
 } load_state_t;
 
+// Used to pass arguments to start routine of a thread
+struct arg_struct {
+	int value;
+	unsigned int cpu;
+};
+
+
+// STATIC VARIABLES
 static struct load_state_t LoadStates[MAX_CPUS];
 
-static int NumCpus = 0;
-// store the cpu with the lightest and heaviest loads, as well as the value of these loads
-static int MinCpu, MaxCpu, MinLoad, MaxLoad;
-// average load across the entire system
-static float AveLoad;
-// task with the smallest load, from the cpu with the heaviest load
-static debug_thread_t min_task;
+static int            NumCpus = 0;
+static int            MinCpu, MaxCpu, MinLoad, MaxLoad; // store the cpu with the lightest and heaviest loads, as well as the value of these loads
+static float          AveLoad;                          // average load across the entire system
+static debug_thread_t min_task;                         // task with the smallest load, from the cpu with the heaviest load
 
 static DIR *dir;
 
-static unsigned    *rmaskp, *imaskp;
-static void		   *my_runmask;
-
-struct arg_struct {
-    int value;
-    unsigned int cpu;
-};
+static unsigned    *rmaskp, *imaskp;	// Pointers to runmask and inherit mask that can be set after initialization using init_runmask()
+static void		   *my_runmask;			// Runmask struct for the parent process (the load balancer itself)
 
 
 // CORE FUNCTIONALITY
@@ -69,9 +81,8 @@ void populate_load_state(int, debug_thread_t);
 int get_load_state(int, int);
 void calculate_cpu_loads();
 int perform_migration(pid_t, int, int);
-int transfer_task(pid_t, int);
 int run_load_balancer();
-int init_cpu(void);
+int transfer_task(pid_t, int);
 void init_runmask(void **);
 void access_runmask(void *);
 void set_runmask(void *);
@@ -79,6 +90,7 @@ void set_runmask_ext(pid_t, int, void*);
 
 // TEST SUITE
 void *run_task(void *);
+void *multiply_matrices(void *);
 
 void load_balance_test();
 void performance_test();
@@ -99,8 +111,8 @@ int main() {
 
 	// Initialize runmask and necessary permissions
 	procmgr_ability(0,
-		PROCMGR_ADN_NONROOT|PROCMGR_AOP_ALLOW|PROCMGR_AID_XPROCESS_DEBUG,
-		PROCMGR_AID_EOL);
+			PROCMGR_ADN_NONROOT|PROCMGR_AOP_ALLOW|PROCMGR_AID_XPROCESS_DEBUG,
+			PROCMGR_AID_EOL);
 
 	struct rlimit rlp;
 
@@ -115,8 +127,8 @@ int main() {
 	set_runmask(my_runmask);
 
 	// Tests
-//	load_balance_test();
-//	performance_test();
+	//	load_balance_test();
+	//	performance_test();
 	utilization_test();
 
 	// Finished getting all thread information
@@ -132,17 +144,17 @@ void populate_load_state(int cpu, debug_thread_t thread) {
 	if (cur_load_state->min_task == NULL) {
 		cur_load_state->min_task = malloc(sizeof(load_state_t));
 		memcpy(cur_load_state->min_task, &thread, sizeof(load_state_t));
-//		printf("new min_task for cpu=%d: pid=%d tid=%d\n", cpu, thread.pid,
-//				thread.tid);
+		//		printf("new min_task for cpu=%d: pid=%d tid=%d\n", cpu, thread.pid,
+		//				thread.tid);
 	} else if (thread.sutime < cur_load_state->min_task->sutime) {
 		memcpy(cur_load_state->min_task, &thread, sizeof(load_state_t));
-//		printf("new min_task for cpu=%d: pid=%d tid=%d\n", cpu, thread.pid,
-//				thread.tid);
+		//		printf("new min_task for cpu=%d: pid=%d tid=%d\n", cpu, thread.pid,
+		//				thread.tid);
 	}
 
 	LoadStates[cpu].totaltime += thread.sutime;
 
-//	printf("total time: %ld\n", cur_load_state->totaltime);
+	//	printf("total time: %ld\n", cur_load_state->totaltime);
 }
 
 // second part of the load monitoring phase of the algorithm
@@ -153,7 +165,7 @@ int get_load_state(int processor_load, int avg_processor_load) {
 	} else if (avg_processor_load * (1 + LOAD_PROPORTION_THRESHOLD)
 			>= processor_load
 			&& processor_load
-					>= avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
+			>= avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
 		return NORMAL_LOAD;
 	} else if (processor_load
 			< avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
@@ -253,16 +265,16 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 			if ((procstatus = devctl(fd, DCMD_PROC_INFO, &procinfo,
 					sizeof procinfo, 0)) != -1) {
 				int lasttid, tid, cpu;
-//				void *runmask;
+				//				void *runmask;
 
 				if (pid == getpid()) {
-//					printf("\npid=%d [proc_status=%d num_threads=%d]\n", pid,
-//							procstatus, procinfo.num_threads);
+					//					printf("\npid=%d [proc_status=%d num_threads=%d]\n", pid,
+					//							procstatus, procinfo.num_threads);
 				} else {
 					continue;
-//					init_runmask(&runmask);
-//					RMSK_SET(0, rmaskp);
-//					RMSK_SET(0, imaskp);
+					//					init_runmask(&runmask);
+					//					RMSK_SET(0, rmaskp);
+					//					RMSK_SET(0, imaskp);
 				}
 
 				if (procinfo.flags & _NTO_PF_ZOMBIE) {
@@ -277,7 +289,7 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 						// Get thread info
 						if ((status = devctl(fd, DCMD_PROC_TIDSTATUS,
 								&threadinfo, sizeof(threadinfo), NULL)) != EOK) {
-//							printf("error status=%d\n", status);
+							//							printf("error status=%d\n", status);
 							break;
 						}
 						tid = threadinfo.tid;
@@ -288,16 +300,16 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 						cpu = threadinfo.last_cpu;
 
 						if (pid != getpid()) {
-//							if (cpu != 0 && threadinfo.state)
-//								set_runmask_ext(pid, tid, runmask);
+							//							if (cpu != 0 && threadinfo.state)
+							//								set_runmask_ext(pid, tid, runmask);
 						} else if (tid != gettid()) {
-//							printf("\ttid=%d cpu=%d state=%d\n", tid, cpu, threadinfo.state);
+							//							printf("\ttid=%d cpu=%d state=%d\n", tid, cpu, threadinfo.state);
 
 							// Part A
 							// Populate load_state_t array
 							populate_load_state(cpu, threadinfo);
 
-//							printf("\t\ttotaltime=%ld\n", LoadStates[cpu].totaltime);
+							//							printf("\t\ttotaltime=%ld\n", LoadStates[cpu].totaltime);
 						}
 					}
 				}
@@ -411,8 +423,6 @@ void set_runmask_ext(pid_t pid, int tid, void *runmask) {
 	}
 }
 
-// ============================== TEST SUITE ==============================
-
 void *run_task(void *_args) {
 	struct arg_struct *args = (struct arg_struct *)_args;
 	int cpu = args->cpu;
@@ -434,11 +444,52 @@ void *run_task(void *_args) {
 	printf("[%d] Done after %d milliseconds\n", gettid(), msec);
 }
 
+// function to multiply two matrices
+void *multiply_matrices(void *_args) {
+	struct arg_struct *args = (struct arg_struct *)_args;
+	int cpu = args->cpu;
+
+	void *runmask;
+	init_runmask(&runmask);
+	RMSK_SET(cpu, rmaskp);
+	set_runmask(runmask);
+
+	// dividing size of matrix into 4 sub-blocks
+	int x = args->value / 4;
+
+	int first[x][x];
+	int second[x][x];
+	int result[x][x];
+
+	for (int i = 0; i < x; ++i) {
+		for (int j = 0; j < x; ++j) {
+			first[i][j] = i+j;
+			second[i][j] = i+j;
+		}
+	}
+
+	// Initializing elements of matrix mult to 0.
+	for (int i = 0; i < x; ++i) {
+		for (int j = 0; j < x; ++j) {
+			result[i][j] = 0;
+		}
+	}
+
+	// Multiplying first and second matrices and storing it in result
+	for (int i = 0; i < x; ++i) {
+		for (int j = 0; j < x; ++j) {
+			for (int k = 0; k < x; ++k) {
+				result[i][j] += first[i][k] * second[k][j];
+			}
+		}
+	}
+}
+
 void load_balance_test() {
 	pthread_t threads[6];
 	pthread_attr_t thread_attrs[6];
 	pid_t pid = getpid();
-	struct arg_struct arg_structs[6];
+	struct arg_struct args;
 	int tid;
 
 	printf("pid=%d\n", pid);
@@ -448,32 +499,27 @@ void load_balance_test() {
 		thread_attrs[i].__param.__sched_priority = 255;
 	}
 
-	arg_structs[0].value = 1000;
-	arg_structs[0].cpu = 1;
-	pthread_create(threads + 0, thread_attrs + 0, run_task, (void *) (arg_structs));
+	args.value = 1000;
+	args.cpu = 1;
+	pthread_create(threads + 0, thread_attrs + 0, run_task, (void *) &args);
 
-	arg_structs[1].value = 500;
-	arg_structs[1].cpu = 2;
-	pthread_create(threads + 1, thread_attrs + 1, run_task, (void *) (arg_structs + 1));
+	args.value = 500;
 
-	arg_structs[2].value = 500;
-	arg_structs[2].cpu = 3;
-	pthread_create(threads + 2, thread_attrs + 2, run_task, (void *) (arg_structs + 2));
+	args.cpu = 2;
+	pthread_create(threads + 1, thread_attrs + 1, run_task, (void *) &args);
+
+	args.cpu = 3;
+	pthread_create(threads + 2, thread_attrs + 2, run_task, (void *) &args);
 	transfer_task(pid, threads[2]);
 
-	arg_structs[3].value = 500;
-	arg_structs[3].cpu = 1;
-	pthread_create(threads + 3, thread_attrs + 3, run_task, (void *) (arg_structs + 3));
+	args.cpu = 1;
+	pthread_create(threads + 3, thread_attrs + 3, run_task, (void *) &args);
 	transfer_task(pid, threads[3]);
 
-	arg_structs[4].value = 500;
-	arg_structs[4].cpu = 1;
-	pthread_create(threads + 4, thread_attrs + 4, run_task, (void *) (arg_structs + 4));
+	pthread_create(threads + 4, thread_attrs + 4, run_task, (void *) &args);
 	transfer_task(pid, threads[4]);
 
-	arg_structs[5].value = 500;
-	arg_structs[5].cpu = 1;
-	pthread_create(threads + 5, thread_attrs + 5, run_task, (void *) (arg_structs + 5));
+	pthread_create(threads + 5, thread_attrs + 5, run_task, (void *) &args);
 
 	pthread_cancel(threads[2]);
 	run_load_balancer();
@@ -537,47 +583,6 @@ void performance_test() {
 	}
 }
 
-// function to multiply two matrices
-void *multiplyMatrices(void *_args) {
-	struct arg_struct *args = (struct arg_struct *)_args;
-	int cpu = args->cpu;
-
-	void *runmask;
-	init_runmask(&runmask);
-	RMSK_SET(cpu, rmaskp);
-	set_runmask(runmask);
-
-	// dividing size of matrix into 4 sub-blocks
-	int x = args->value / 4;
-
-	int first[x][x];
-	int second[x][x];
-	int result[x][x];
-
-	for (int i = 0; i < x; ++i) {
-		for (int j = 0; j < x; ++j) {
-			first[i][j] = i+j;
-			second[i][j] = i+j;
-		}
-	}
-
-   // Initializing elements of matrix mult to 0.
-   for (int i = 0; i < x; ++i) {
-      for (int j = 0; j < x; ++j) {
-         result[i][j] = 0;
-      }
-   }
-
-   // Multiplying first and second matrices and storing it in result
-   for (int i = 0; i < x; ++i) {
-      for (int j = 0; j < x; ++j) {
-         for (int k = 0; k < x; ++k) {
-            result[i][j] += first[i][k] * second[k][j];
-         }
-      }
-   }
-}
-
 void utilization_test() {
 	long time;
 	struct timespec start, stop;
@@ -608,12 +613,12 @@ void utilization_test() {
 			else
 				args.cpu = 3;
 
-			pthread_create(threads + i, thread_attrs + i, (void *) multiplyMatrices, (void *) &args);
+			pthread_create(threads + i, thread_attrs + i, (void *) multiply_matrices, (void *) &args);
 			transfer_task(getpid(), threads[i]);
 		}
 
 		for (int i = 0; i < 24; i++)
-		   pthread_join(threads[i], NULL);
+			pthread_join(threads[i], NULL);
 
 		clock_gettime( CLOCK_PROCESS_CPUTIME_ID, &stop);
 
