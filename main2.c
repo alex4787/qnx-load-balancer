@@ -26,6 +26,7 @@
 #include <sys/trace.h>
 #include <sys/kercalls.h>
 #include <sys/procmgr.h>
+#include <sys/resource.h>
 
 #define TRUE 0
 #define FALSE 1
@@ -101,6 +102,13 @@ int main() {
 		PROCMGR_ADN_NONROOT|PROCMGR_AOP_ALLOW|PROCMGR_AID_XPROCESS_DEBUG,
 		PROCMGR_AID_EOL);
 
+	struct rlimit rlp;
+
+	getrlimit(RLIMIT_NOFILE, &rlp);
+	rlp.rlim_cur = 9000;
+	rlp.rlim_max = 9000;
+	setrlimit(RLIMIT_NOFILE, &rlp);
+
 	init_runmask(&my_runmask);
 	RMSK_SET(0, rmaskp);
 	RMSK_CLR(0, imaskp);
@@ -110,6 +118,9 @@ int main() {
 //	load_balance_test();
 //	performance_test();
 	utilization_test();
+
+	// Finished getting all thread information
+	closedir(dir);
 
 	return 0;
 }
@@ -131,7 +142,7 @@ void populate_load_state(int cpu, debug_thread_t thread) {
 
 	LoadStates[cpu].totaltime += thread.sutime;
 
-	printf("total time: %ld\n", cur_load_state->totaltime);
+//	printf("total time: %ld\n", cur_load_state->totaltime);
 }
 
 // second part of the load monitoring phase of the algorithm
@@ -204,6 +215,8 @@ int run_load_balancer() {
 }
 
 int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
+	rewinddir(dir);
+
 	struct dirent *dirent;
 	debug_process_t procinfo;
 
@@ -224,6 +237,7 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 				continue;
 			}
 
+
 			int fd;
 			char buff[512];
 			int procstatus;
@@ -231,6 +245,7 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 			snprintf(buff, sizeof(buff), "/proc/%d/as", pid);
 
 			if ((fd = open(buff, O_RDONLY)) == -1) {
+				perror("open()");
 				return -1;
 			}
 
@@ -241,8 +256,8 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 //				void *runmask;
 
 				if (pid == getpid()) {
-					printf("\npid=%d [proc_status=%d num_threads=%d]\n", pid,
-							procstatus, procinfo.num_threads);
+//					printf("\npid=%d [proc_status=%d num_threads=%d]\n", pid,
+//							procstatus, procinfo.num_threads);
 				} else {
 					continue;
 //					init_runmask(&runmask);
@@ -276,22 +291,22 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 //							if (cpu != 0 && threadinfo.state)
 //								set_runmask_ext(pid, tid, runmask);
 						} else if (tid != gettid()) {
-							printf("\ttid=%d cpu=%d state=%d\n", tid, cpu, threadinfo.state);
+//							printf("\ttid=%d cpu=%d state=%d\n", tid, cpu, threadinfo.state);
 
 							// Part A
 							// Populate load_state_t array
 							populate_load_state(cpu, threadinfo);
 
-							printf("\t\ttotaltime=%ld\n", LoadStates[cpu].totaltime);
+//							printf("\t\ttotaltime=%ld\n", LoadStates[cpu].totaltime);
 						}
 					}
 				}
 			}
-			close(fd);
+			if (close(fd) == -1) {
+				perror("close()");
+			}
 		}
 	}
-	// Finished getting all thread information
-	closedir(dir);
 
 	// Part B
 	// could refactor to use total_time from LoadStates instead of sampleCpus
@@ -390,7 +405,6 @@ void set_runmask(void *runmask) {
 }
 
 void set_runmask_ext(pid_t pid, int tid, void *runmask) {
-	printf("pid=%d tid=%d\n", pid, tid);
 	if (ThreadCtlExt(pid, tid, _NTO_TCTL_RUNMASK_GET_AND_SET_INHERIT, runmask) == -1) {
 		perror ("ThreadCtlExt()");
 		exit(-1);
@@ -568,23 +582,24 @@ void utilization_test() {
 	long time;
 	struct timespec start, stop;
 
+	pthread_t threads[24];
+	pthread_attr_t thread_attrs[24];
+
+	struct arg_struct args;
+
+	for (int i = 0; i < 24; i++) {
+		pthread_attr_init(thread_attrs + i);
+		thread_attrs[i].__param.__sched_priority = 15;
+	}
+
 	for (int x = 32; x <= 256; x *= 2) {
 		printf("%d\n", x);
-		pthread_t threads[24];
-		pthread_attr_t thread_attrs[24];
-
-		struct arg_struct args;
-		args.value = x;
-
-		for (int i = 0; i < 24; i++) {
-			pthread_attr_init(thread_attrs + i);
-			thread_attrs[i].__param.__sched_priority = 15;
-		}
 
 		clock_gettime( CLOCK_PROCESS_CPUTIME_ID, &start);
 
 		// add 10 tasks running matrix multiplication on core 1, 7 on core 2, and 7 on core 3.
-		args.cpu = 1;
+		args.value = x;
+
 		for (int i = 0; i < 24; i++) {
 			if (i < 10)
 				args.cpu = 1;
@@ -594,7 +609,7 @@ void utilization_test() {
 				args.cpu = 3;
 
 			pthread_create(threads + i, thread_attrs + i, (void *) multiplyMatrices, (void *) &args);
-//			transfer_task(getpid(), threads[i]);
+			transfer_task(getpid(), threads[i]);
 		}
 
 		for (int i = 0; i < 24; i++)
