@@ -131,8 +131,8 @@ int main() {
 
 	// Tests (can comment out to run one at a time)
 	load_balance_test();
-	performance_test();
-	utilization_test();
+//	performance_test();
+//	utilization_test();
 
 	// Finished getting all thread information
 	closedir(dir);
@@ -289,7 +289,7 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid, int time_slice
 						cpu = threadinfo.last_cpu;
 
 						// Only consider the tasks run by the tests (i.e. same pid, but not the load balancer thread)
-						if (pid != getpid() && tid != gettid()) {
+						if (pid == getpid() && tid != gettid()) {
 							printf("\ttid=%d cpu=%d state=%d\n", tid, cpu, threadinfo.state);
 
 							// If running this on creation of a new task, make it the min_task
@@ -351,6 +351,7 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid, int time_slice
 }
 
 // Initializes a runmask to be used for transferring tasks to another CPU.
+// From the QNX reference docs: https://www.qnx.com/developers/docs/7.1/#com.qnx.doc.neutrino.lib_ref/topic/t/threadctl.html#threadctl___NTO_TCTL_RUNMASK_GET_AND_SET
 void init_runmask(void **runmask) {
 	int         *rsizep, size;
 	unsigned    num_elements = 0;
