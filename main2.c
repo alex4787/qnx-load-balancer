@@ -1,8 +1,8 @@
 /*
  * main.c
  *
- * QNX load balancer implementation using BMP (bound multiprocessing) including related tests.
- * Created for the final projection in COMP 4900-A Real-time Operating Systems.
+ * QNX load balancer implementation for BMP (bound multiprocessing) including related tests.
+ * Created for the final project in COMP 4900-A, Real-time Operating Systems.
  *
  * Authors: Morgan Vallati, Alex Chan
  */
@@ -38,8 +38,8 @@
 #include <sys/resource.h>
 
 
-#define TRUE 0
-#define FALSE 1
+#define TRUE 1
+#define FALSE 0
 
 #define MAX_CPUS 32
 
@@ -82,7 +82,7 @@ int get_load_state(int, int);
 void calculate_cpu_loads();
 int perform_migration(pid_t, int, int);
 int run_load_balancer();
-int transfer_task(pid_t, int);
+int transfer_task(pid_t, int, int);
 void init_runmask(void **);
 void access_runmask(void *);
 void set_runmask(void *);
@@ -101,7 +101,7 @@ int main() {
 	// Initialize number of CPUs
 	NumCpus = _syspage_ptr->num_cpu;
 
-	// Open /proc directory
+	// Open /proc directory to access information on all processes and threads
 	dir = opendir("/proc");
 
 	if (dir == NULL) {
@@ -109,11 +109,12 @@ int main() {
 		return -1;
 	}
 
-	// Initialize runmask and necessary permissions
+	// Add ProcMgr permission to allow this process to change the runmask of other processes
 	procmgr_ability(0,
 			PROCMGR_ADN_NONROOT|PROCMGR_AOP_ALLOW|PROCMGR_AID_XPROCESS_DEBUG,
 			PROCMGR_AID_EOL);
 
+	// Increase the file descriptor limit to 9000 (due to the number of files opened in /proc)
 	struct rlimit rlp;
 
 	getrlimit(RLIMIT_NOFILE, &rlp);
@@ -121,14 +122,16 @@ int main() {
 	rlp.rlim_max = 9000;
 	setrlimit(RLIMIT_NOFILE, &rlp);
 
+	// Set the runmask of this process to only run on CPU 0,
+	// and the inherit mask to prevent any other threads run on this process from using CPU 0 (for tests)
 	init_runmask(&my_runmask);
 	RMSK_SET(0, rmaskp);
 	RMSK_CLR(0, imaskp);
 	set_runmask(my_runmask);
 
-	// Tests
-	//	load_balance_test();
-	//	performance_test();
+	// Tests (can comment out to run one at a time)
+	load_balance_test();
+	performance_test();
 	utilization_test();
 
 	// Finished getting all thread information
@@ -137,46 +140,36 @@ int main() {
 	return 0;
 }
 
-// first part of the load monitoring phase of the algorithm
+// First part of the load monitoring phase of the algorithm
 void populate_load_state(int cpu, debug_thread_t thread) {
 	struct load_state_t *cur_load_state = LoadStates + cpu;
 
+	// Update the min_task on this CPU if none already or the running time is less than the min_task
 	if (cur_load_state->min_task == NULL) {
-		cur_load_state->min_task = malloc(sizeof(load_state_t));
-		memcpy(cur_load_state->min_task, &thread, sizeof(load_state_t));
-		//		printf("new min_task for cpu=%d: pid=%d tid=%d\n", cpu, thread.pid,
-		//				thread.tid);
+		cur_load_state->min_task = malloc(sizeof(debug_thread_t));
+		memcpy(cur_load_state->min_task, &thread, sizeof(debug_thread_t));
 	} else if (thread.sutime < cur_load_state->min_task->sutime) {
-		memcpy(cur_load_state->min_task, &thread, sizeof(load_state_t));
-		//		printf("new min_task for cpu=%d: pid=%d tid=%d\n", cpu, thread.pid,
-		//				thread.tid);
+		memcpy(cur_load_state->min_task, &thread, sizeof(debug_thread_t));
 	}
 
+	// Increase the totaltime of the CPU by the thread's running time
 	LoadStates[cpu].totaltime += thread.sutime;
-
-	//	printf("total time: %ld\n", cur_load_state->totaltime);
 }
 
-// second part of the load monitoring phase of the algorithm
-// this function corresponds to equation 1 in the project report
+// Second part of the load monitoring phase of the algorithm
+// This function corresponds to equation 1 in the project report
 int get_load_state(int processor_load, int avg_processor_load) {
-	if (processor_load > avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
+	if (processor_load > avg_processor_load * (1 + LOAD_PROPORTION_THRESHOLD)) {
 		return HEAVY_LOAD;
-	} else if (avg_processor_load * (1 + LOAD_PROPORTION_THRESHOLD)
-			>= processor_load
-			&& processor_load
-			>= avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
-		return NORMAL_LOAD;
-	} else if (processor_load
-			< avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
+	} else if (processor_load < avg_processor_load * (1 - LOAD_PROPORTION_THRESHOLD)) {
 		return LIGHT_LOAD;
 	} else {
-		return -1;
+		return NORMAL_LOAD;
 	}
 }
 
-// finds the cpus with the lightest and heaviest loads, and what these load values are
-// calculates the average load across the entire system
+// Finds the cpus with the lightest and heaviest loads, and what these load values are.
+// Calculates the average load across the entire system.
 void calculate_cpu_loads() {
 	float sum;
 
@@ -204,7 +197,7 @@ void calculate_cpu_loads() {
 	AveLoad = sum / (NumCpus - 1);
 }
 
-// load migration part of the algorithm
+// Task migration part of the algorithm (migrates min_task to the CPU with the minimum load)
 int perform_migration(pid_t min_task_pid, int min_task_tid, int MinCpu) {
 	void *runmask;
 	init_runmask(&runmask);
@@ -222,17 +215,23 @@ int perform_migration(pid_t min_task_pid, int min_task_tid, int MinCpu) {
 	return 0;
 }
 
+// Akin to the get_transfer_task() in the paper
+// This should be run periodically to determine the minimum CPU and which task to transfer, and migrate it if necessary.
 int run_load_balancer() {
-	return transfer_task(-1, -1);
+	return transfer_task(-1, -1, 0);
 }
 
-int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
+// Akin to the get_free_core() in the paper
+// This is run when a new task is created and is moved to the minimum CPU (no need to find min_task)
+// Largely inspired by: https://github.com/vocho/openqnx/blob/cc95df3543a1c481d4f8ad387e29f0d1ff0c87fe/trunk/utils/p/pidin/pidin.c#L526
+int transfer_task(pid_t transfer_task_pid, int transfer_task_tid, int time_slice) {
 	rewinddir(dir);
 
 	struct dirent *dirent;
 	debug_process_t procinfo;
+	unsigned char found_transfer_task = FALSE;
 
-	// Reset values
+	// Reset values in LoadStates
 	for (int i = 0; i < NumCpus; i++) {
 		LoadStates[i].min_task = NULL;
 		LoadStates[i].totaltime = 0;
@@ -244,11 +243,10 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 		if (isdigit(dirent->d_name[0])) {
 			int pid = atoi(dirent->d_name);
 
-			// Skip all other
+			// Skip procnto
 			if (pid == 1) {
 				continue;
 			}
-
 
 			int fd;
 			char buff[512];
@@ -265,17 +263,6 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 			if ((procstatus = devctl(fd, DCMD_PROC_INFO, &procinfo,
 					sizeof procinfo, 0)) != -1) {
 				int lasttid, tid, cpu;
-				//				void *runmask;
-
-				if (pid == getpid()) {
-					//					printf("\npid=%d [proc_status=%d num_threads=%d]\n", pid,
-					//							procstatus, procinfo.num_threads);
-				} else {
-					continue;
-					//					init_runmask(&runmask);
-					//					RMSK_SET(0, rmaskp);
-					//					RMSK_SET(0, imaskp);
-				}
 
 				if (procinfo.flags & _NTO_PF_ZOMBIE) {
 					close(fd);
@@ -286,12 +273,14 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 						int status;
 						procfs_status threadinfo;
 						threadinfo.tid = tid;
+
 						// Get thread info
 						if ((status = devctl(fd, DCMD_PROC_TIDSTATUS,
 								&threadinfo, sizeof(threadinfo), NULL)) != EOK) {
 							//							printf("error status=%d\n", status);
 							break;
 						}
+
 						tid = threadinfo.tid;
 						if (tid < lasttid) {
 							break;
@@ -299,17 +288,20 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 
 						cpu = threadinfo.last_cpu;
 
-						if (pid != getpid()) {
-							//							if (cpu != 0 && threadinfo.state)
-							//								set_runmask_ext(pid, tid, runmask);
-						} else if (tid != gettid()) {
-							//							printf("\ttid=%d cpu=%d state=%d\n", tid, cpu, threadinfo.state);
+						// Only consider the tasks run by the tests (i.e. same pid, but not the load balancer thread)
+						if (pid != getpid() && tid != gettid()) {
+							printf("\ttid=%d cpu=%d state=%d\n", tid, cpu, threadinfo.state);
+
+							// If running this on creation of a new task, make it the min_task
+							if (pid == transfer_task_pid && tid == transfer_task_tid) {
+								found_transfer_task = TRUE;
+								memcpy(&min_task, &threadinfo, sizeof(debug_thread_t));
+								continue;
+							}
 
 							// Part A
 							// Populate load_state_t array
 							populate_load_state(cpu, threadinfo);
-
-							//							printf("\t\ttotaltime=%ld\n", LoadStates[cpu].totaltime);
 						}
 					}
 				}
@@ -318,6 +310,10 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 				perror("close()");
 			}
 		}
+	}
+
+	for (int i = 0; i < NumCpus; i++) {
+		printf("CPU %d totaltime=%ld\n", i, LoadStates[i].totaltime);
 	}
 
 	// Part B
@@ -333,24 +329,28 @@ int transfer_task(pid_t transfer_task_pid, int transfer_task_tid) {
 			printf("no migration needed 1\n");
 			return 0;
 		}
+		min_task = *LoadStates[MaxCpu].min_task;
+
+		transfer_task_pid = min_task.pid;
+		transfer_task_tid = min_task.tid;
 
 		// Part B5
-		min_task = *LoadStates[MaxCpu].min_task;
 		if (MinLoad + min_task.sutime >= MaxLoad - min_task.sutime) {
 			printf("no migration needed 2\n");
 			return 0;
 		}
-
-		transfer_task_pid = min_task.pid;
-		transfer_task_tid = min_task.tid;
+	} else if (!found_transfer_task) {
+		fprintf(stderr, "Could not find transfer task specified.\n");
+		return -1;
 	}
 
-	// a task migration is performed to move the min_task (from the heaviest loaded core) to the core with the lightest load
+	// A task migration is performed to move the min_task (from the heaviest loaded core) to the core with the lightest load
 	perform_migration(transfer_task_pid, transfer_task_tid, MinCpu);
 
 	return 1;
 }
 
+// Initializes a runmask to be used for transferring tasks to another CPU.
 void init_runmask(void **runmask) {
 	int         *rsizep, size;
 	unsigned    num_elements = 0;
@@ -384,6 +384,7 @@ void init_runmask(void **runmask) {
 	}
 }
 
+// Sets the static variables representing the components of the runmask to be accessible for changing.
 void access_runmask(void *runmask) {
 	int         *rsizep, size;
 	unsigned    num_elements = 0;
@@ -409,6 +410,7 @@ void access_runmask(void *runmask) {
 	imaskp = rmaskp + num_elements;
 }
 
+// Sets the runmask of the current load balancer thread.
 void set_runmask(void *runmask) {
 	if (ThreadCtl(_NTO_TCTL_RUNMASK_GET_AND_SET_INHERIT, runmask) == -1) {
 		perror ("ThreadCtl()");
@@ -416,6 +418,7 @@ void set_runmask(void *runmask) {
 	}
 }
 
+// Sets the runmask of another process + thread.
 void set_runmask_ext(pid_t pid, int tid, void *runmask) {
 	if (ThreadCtlExt(pid, tid, _NTO_TCTL_RUNMASK_GET_AND_SET_INHERIT, runmask) == -1) {
 		perror ("ThreadCtlExt()");
@@ -423,6 +426,9 @@ void set_runmask_ext(pid_t pid, int tid, void *runmask) {
 	}
 }
 
+// Start routine of the load_balancer_test threads.
+// Sets its own CPU as specified by args.cpu.
+// Simply occupies the CPU for args.value milliseconds.
 void *run_task(void *_args) {
 	struct arg_struct *args = (struct arg_struct *)_args;
 	int cpu = args->cpu;
@@ -433,18 +439,27 @@ void *run_task(void *_args) {
 	set_runmask(runmask);
 
 	int msec = args->value;
+	int msec_to_wait;
 	struct timespec when;
 
 	printf("[%d] Sleeping for %d milliseconds\n", gettid(), msec);
 
-	when.tv_sec = 0;
-	when.tv_nsec = msec * 1000000;
-	nanospin(&when);
+	// Necessary because nanospin takes no values above 500 milliseconds.
+	while (msec > 0) {
+		msec_to_wait = msec >= 500 ? 500 : msec;
+		msec -= msec_to_wait;
 
-	printf("[%d] Done after %d milliseconds\n", gettid(), msec);
+		when.tv_sec = 0;
+		when.tv_nsec = msec_to_wait * 1000000;
+
+		nanospin(&when);
+	}
+
+	printf("[%d] Done after %d milliseconds\n", gettid(), args->value);
 }
 
-// function to multiply two matrices
+// Function to multiply two matrices, used in the utilization_test threads.
+// Sets its own CPU as specified by args.cpu.
 void *multiply_matrices(void *_args) {
 	struct arg_struct *args = (struct arg_struct *)_args;
 	int cpu = args->cpu;
@@ -454,7 +469,7 @@ void *multiply_matrices(void *_args) {
 	RMSK_SET(cpu, rmaskp);
 	set_runmask(runmask);
 
-	// dividing size of matrix into 4 sub-blocks
+	// Dividing size of matrix into 4 sub-blocks
 	int x = args->value / 4;
 
 	int first[x][x];
@@ -485,46 +500,69 @@ void *multiply_matrices(void *_args) {
 	}
 }
 
+// First test case in the paper that ensures the load balancer algorithm works as expected.
 void load_balance_test() {
 	pthread_t threads[6];
 	pthread_attr_t thread_attrs[6];
 	pid_t pid = getpid();
 	struct arg_struct args;
 	int tid;
+	int time_slice;
 
 	printf("pid=%d\n", pid);
 
 	for (int i = 0; i < 6; i++) {
 		pthread_attr_init(thread_attrs + i);
-		thread_attrs[i].__param.__sched_priority = 255;
+		pthread_attr_setinheritsched (thread_attrs + i, PTHREAD_EXPLICIT_SCHED);
+
+		struct sched_param param;
+
+		param.sched_priority = 255;
+
+		pthread_attr_setschedparam(thread_attrs + i, &param);
+		pthread_attr_setschedpolicy (thread_attrs + i, SCHED_RR);
 	}
 
-	args.value = 1000;
+	args.value = 100;
 	args.cpu = 1;
+	time_slice = 100;
 	pthread_create(threads + 0, thread_attrs + 0, run_task, (void *) &args);
+	transfer_task(pid, threads[0], time_slice);
 
-	args.value = 500;
+	args.value = 50;
+	time_slice = 50;
 
-	args.cpu = 2;
 	pthread_create(threads + 1, thread_attrs + 1, run_task, (void *) &args);
+	transfer_task(pid, threads[1], time_slice);
 
-	args.cpu = 3;
 	pthread_create(threads + 2, thread_attrs + 2, run_task, (void *) &args);
-	transfer_task(pid, threads[2]);
+	transfer_task(pid, threads[2], time_slice);
 
 	args.cpu = 1;
 	pthread_create(threads + 3, thread_attrs + 3, run_task, (void *) &args);
-	transfer_task(pid, threads[3]);
+	transfer_task(pid, threads[3], time_slice);
 
 	pthread_create(threads + 4, thread_attrs + 4, run_task, (void *) &args);
-	transfer_task(pid, threads[4]);
+	transfer_task(pid, threads[4], time_slice);
 
 	pthread_create(threads + 5, thread_attrs + 5, run_task, (void *) &args);
+	transfer_task(pid, threads[4], time_slice);
 
 	pthread_cancel(threads[2]);
+
+	pthread_join(threads[2], NULL);
+
 	run_load_balancer();
+
+	sleep(1);
+
+	run_load_balancer();
+
+	for (int i = 0; i < 6; i++)
+		pthread_join(threads[i], NULL);
 }
 
+// Second test case in the paper that measures the overhead of the load balancer.
 void performance_test() {
 	long max_time = 0;
 	long total_time = 0;
@@ -547,7 +585,7 @@ void performance_test() {
 
 		total_time += time;
 
-		printf("TOOK %ld nanoseconds\n\n", time);
+//		printf("TOOK %ld nanoseconds\n\n", time);
 
 		if ((i + 1) % 10 == 0) {
 			avg_time = (long) ((double) total_time / (double) (i+1));
@@ -563,7 +601,7 @@ void performance_test() {
 
 	for (int i = 0; i < trials; i++) {
 		clock_gettime( CLOCK_PROCESS_CPUTIME_ID, &start);
-		transfer_task(pid, tid);
+		transfer_task(pid, tid, 50);
 		clock_gettime( CLOCK_PROCESS_CPUTIME_ID, &stop);
 
 		time = ((stop.tv_sec - start.tv_sec) * 1000000) + (stop.tv_nsec - start.tv_nsec);
@@ -574,7 +612,7 @@ void performance_test() {
 
 		total_time += time;
 
-		printf("TOOK %ld nanoseconds\n\n", time);
+//		printf("TOOK %ld nanoseconds\n\n", time);
 
 		if ((i + 1) % 10 == 0) {
 			avg_time = (long) ((double) total_time / (double) (i+1));
@@ -583,6 +621,7 @@ void performance_test() {
 	}
 }
 
+// Third test case in the paper that sees the change in CPU utilization / thread allocation with/without the load balancer.
 void utilization_test() {
 	long time;
 	struct timespec start, stop;
@@ -594,17 +633,25 @@ void utilization_test() {
 
 	for (int i = 0; i < 24; i++) {
 		pthread_attr_init(thread_attrs + i);
-		thread_attrs[i].__param.__sched_priority = 15;
+		pthread_attr_setinheritsched (thread_attrs + i, PTHREAD_EXPLICIT_SCHED);
+
+		struct sched_param param;
+
+		param.sched_priority = 15;
+
+		pthread_attr_setschedparam(thread_attrs + i, &param);
+		pthread_attr_setschedpolicy (thread_attrs + i, SCHED_RR);
 	}
 
+	// Runs the utilization test for matrices with size 32, 64, 128, and 256.
 	for (int x = 32; x <= 256; x *= 2) {
 		printf("%d\n", x);
 
 		clock_gettime( CLOCK_PROCESS_CPUTIME_ID, &start);
 
-		// add 10 tasks running matrix multiplication on core 1, 7 on core 2, and 7 on core 3.
 		args.value = x;
 
+		// add 10 tasks running matrix multiplication on core 1, 7 on core 2, and 7 on core 3.
 		for (int i = 0; i < 24; i++) {
 			if (i < 10)
 				args.cpu = 1;
@@ -614,7 +661,11 @@ void utilization_test() {
 				args.cpu = 3;
 
 			pthread_create(threads + i, thread_attrs + i, (void *) multiply_matrices, (void *) &args);
-			transfer_task(getpid(), threads[i]);
+		}
+
+		for (int i = 0; i < 20; i++) {
+			run_load_balancer();
+			sleep(1);
 		}
 
 		for (int i = 0; i < 24; i++)
